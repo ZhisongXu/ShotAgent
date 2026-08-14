@@ -1,0 +1,37 @@
+{
+  "name": "VideoGradeBench-v1",
+  "expected_track_count": 5,
+  "tracks": [
+    {
+      "name": "intent-parameter",
+      "type": "agent",
+      "manifest": "../../../outputs/benchmark/intent/manifest.json",
+      "maximum_evaluations": 3,
+      "max_frames": 48
+    },
+    {
+      "name": "sdsd-paired-quality",
+      "type": "agent",
+      "manifest": "../../../outputs/benchmark/sdsd/manifest.json",
+      "maximum_evaluations": 3
+    },
+    {
+      "name": "autoshot-storyboard",
+      "type": "storyboard",
+      "manifest": "../../../outputs/benchmark/autoshot/manifest.json",
+      "anchors_per_shot": 1
+    },
+    {
+      "name": "video-safety-rollback",
+      "type": "safety",
+      "manifest": "../../../outputs/benchmark/safety/manifest.json",
+      "max_frames": 48
+    },
+    {
+      "name": "vdpve-critic-mos",
+      "type": "critic_mos",
+      "manifest": "../../../outputs/benchmark/vdpve/manifest.json",
+      "max_frames": 48
+    }
+  ]
+}

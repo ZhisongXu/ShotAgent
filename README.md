@@ -1,282 +1,242 @@
-<div align="center">
+# BayesGrade / AnchorRetouchAgent
 
+This repository is being refactored from the original **4KAgent** restoration
+system into a data-efficient, interpretable image/video retouching Agent.
 
-<h1>4KAgent: Agentic Any Image to 4K Super-Resolution</h1>
+The primary video stack is:
 
-<div>
-    <a href='https://yushenzuo.github.io' target='_blank'>Yushen Zuo<sup>1</sup></a>&emsp;
-    Qi Zheng<sup>1†</sup>&emsp;
-    Mingyang Wu<sup>1†</sup>&emsp;
-    Xinrui Jiang<sup>2†</sup>&emsp;
-    <a href='https://shadowiterator.github.io' target='_blank'>Renjie Li<sup>1</sup></a>&emsp;<br>
-    <a href='https://jianwang-cmu.github.io' target='_blank'>Jian Wang<sup>3</sup></a>&emsp;
-    <a href='https://yzhang34.github.io/author/yide-zhang' target='_blank'>Yide Zhang<sup>4</sup></a>&emsp;
-    <a href='https://gengchenmai.github.io' target='_blank'>Gengchen Mai<sup>5</sup></a>&emsp;
-    <a href='https://coilab.caltech.edu/members/directors-biography' target='_blank'>Lihong V. Wang<sup>6</sup></a>&emsp;
-    <a href='https://www.james-zou.com' target='_blank'>James Zou<sup>2</sup></a>&emsp;<br>
-    <a href='https://www.xiaoyumu.com' target='_blank'>Xiaoyu Wang<sup>7</sup></a>&emsp;
-    <a href='https://faculty.ucmerced.edu/mhyang' target='_blank'>Ming-Hsuan Yang<sup>8</sup></a>&emsp;
-    <a href='https://vztu.github.io' target='_blank'>Zhengzhong Tu<sup>1*</sup></a>
-</div>
-<br>
-<div>
-    <sup>1</sup>Texas A&M University&emsp;  <sup>2</sup>Stanford University&emsp;  <sup>3</sup>Snap Inc.&emsp;  <sup>4</sup>CU Boulder<br>
-    <sup>5</sup>UT Austin&emsp;  <sup>6</sup>California Institute of Technology&emsp;  <sup>7</sup>Topaz Labs&emsp;  <sup>8</sup>UC Merced<br>
-    <sup>†</sup>Indicates Equal Contribution<br>
-    <sup>*</sup>Corresponding Author
-</div>
+```text
+Video Perceiver: full-video scan + hierarchical VL shot/Anchor planning
+  → rank per-shot Anchors into a global HeroAnchor shortlist
+  → develop and approve one HeroAnchor as the master look
+  → match every other shot Anchor to the accepted Hero visual reference
+  → UCT-MCTS trajectory planner with action memory
+  → multiple independent editing Agents / MonetGPT / external tools
+  → deterministic RetouchExecutor + Bayesian temporal parameter field
+  → multiple visual critics + deterministic temporal safety veto
+  → reward back-propagation, Anchor replacement, Hero reselection, and rollback
+```
 
-<!-- [[paper]](https://arxiv.org/abs/2507.07105) -->
-<br>
+The deployed pipeline follows PhotoAgent's agent-in-the-loop structure while
+remaining model-family neutral. Perception, editing, and evaluation can use
+different OpenAI-compatible multimodal endpoints or external editing tools.
 
+## What is implemented
 
-</div>
+- 12-parameter global/local photometric executor;
+- mask-local exposure, temperature, and saturation;
+- hierarchical long-video VL planner with overlapping windows, boundary
+  adjudication, and per-shot Anchor ranking;
+- tournament-style HeroAnchor selection across all shot Anchors;
+- visual shot matching against the accepted graded HeroAnchor;
+- training-free heuristic planner retained only as an explicit ablation/fallback;
+- provider-neutral multi-model Agent configuration;
+- real UCT-MCTS selection, expansion, simulation, and reward back-propagation;
+- competing editing-Agent proposals and independent critic ensemble;
+- per-shot action memory, trajectory export, and transactional rollback;
+- Anchor parameter covariance output;
+- Bayesian temporal parameter field;
+- analytic and Langevin-disagreement Anchor acquisition.
 
-<div align="center">
+The original NeurIPS 2025 4KAgent restoration code is retained under
+[`legacy/4kagent`](legacy/4kagent/) for reproducibility, but is no longer part of
+the main project import path.
 
-[![](https://img.shields.io/badge/Project%20Page-8A2BE2)](https://4kagent.github.io)&nbsp;
-[![arXiv](https://img.shields.io/badge/arXiv%20paper-2507.07105-b31b1b.svg)](https://arxiv.org/abs/2507.07105)&nbsp;
-[![🤗 Dataset](https://img.shields.io/badge/%F0%9F%A4%97%20Dataset-DIV--4K--50-yellow)](https://huggingface.co/datasets/YSZuo/DIV4K-50)
-![visitors](https://visitor-badge.laobi.icu/badge?page_id=taco-group/4KAgent)
+For a clean-machine setup, required downloads, OpenAI/MonetGPT configuration,
+and DaVinci Resolve application steps, see the Chinese
+[`INSTALLATION_AND_USAGE.zh-CN.md`](INSTALLATION_AND_USAGE.zh-CN.md) guide.
 
----
+## Video to grading parameters
 
-</div>
+The primary video entry point accepts a video plus a text instruction and emits
+an editable grade graph. The product output is JSON containing shot boundaries,
+Anchor parameter keyframes, the shot base grade, a dense 12-D parameter
+trajectory, confidence, and rollback history. A normalized source video and the
+final parameter-rendered result can also be exported for visual inspection.
 
-
-<p align="center">
-  <strong><em>Accepted by NeurIPS 2025</em></strong>
-</p>
-
-
-<p align="center">
-    <img src="./assets/4KAgent_Teaser.jpg" width=95%>
-<p>
-
-
-## Introduction
-
-We present **4KAgent**, an agentic image super-resolution generalist designed to universally upscale any image to **4K resolution**, regardless of input type, degradation level, or domain. **4KAgent** offers these key features:
-
-- 🔥 **Framework**: **4KAgent** is the first AI agent framework for universal any-image-to-4K upscaling, capable of handling **all image categories**, ranging from classical and realistic degradations, extreme low-quality inputs, AI-generated imagery, to scientific imaging tasks such as remote sensing, microscopy, and biomedical inputs.
-
-- 🔥 **System Design**: A multi-agent system in **4KAgent**, the **Perception Agent** employs large vision-language models (VLMs) to analyze the content and distortion in the image and provide the restoration plan for the restoration agent to execute. The **Restoration Agent**, which sets up an execution—reflection—rollback procedure for recursive restoration and upscaling.
-
-- 🔥 **Q-MoE & Face Restoration pipeline**: In each restoration step of the restoration plan, we propose a Quality-Driven Mixture-of-Expert (**Q-MoE**) policy in execution and reflection to select the optimal image. We further develop a **face restoration pipeline** to enhance faces in images.
-
-- 🔥 **Profile Module**: To expand the applicability of **4KAgent**, we propose a **Profile Module** to bring the availability to customize the system for different restoration tasks. **4KAgent** can adapt to different restoration tasks without extra training.
-
-- 🔥 **[DIV4K-50 Dataset](https://huggingface.co/datasets/YSZuo/DIV4K-50)**: We build the **DIV4K-50** dataset as a challenging testset to upscale a low-quality (LQ) image in 256 × 256 resolution with multiple degradations to a high-quality (HQ) 4K image in 4096 × 4096 resolution.
-
-
-## Pipeline
-
-<p align="center">
-    <img src="./assets/4KAgent_framework.png" width=95%>
-<p>
-
-
-## Dependencies and Installation
-
-Please refer to the [Installation Guide](installation/Installation.md) for detailed instructions on setting up the environment and installing dependencies.
-
-## Inference
-
-**Prerequest:** Before running 4KAgent, please fill in the API key in [config file](config.yml)
-
-The inference of 4KAgent relies on profile, we present examples here:
-
-**Profiles use 'llama_vision' as the VLM in perception agent:**
-
-**Classic SR (ExpSR_s4_F)**
 ```bash
-CUDA_VISIBLE_DEVICES=1 python infer_4kagent.py \
-  --input_dir ./assets/profile_test_example/classicsr \
-  --output_dir ./outputs/4KAgent_test/classicsr \
-  --profile_name ExpSR_s4_F \
-  --tool_run_gpu_id 2
+python retouch_video.py \
+  --input input.mp4 \
+  --instruction "natural warm cinematic grade with protected skin tones" \
+  --agent-config configs/photoagent_multi.json \
+  --output outputs/input.grade.json \
+  --trajectory-output outputs/input.rollouts.jsonl \
+  --video-output-dir outputs/input_videos \
+  --resolve-package-dir outputs/input_resolve \
+  --analysis-max-side 960 \
+  --render-max-side 1920
 ```
 
-**Real-World SR (ExpSR_s4_P)**
+The video directory contains `<input>.source.mp4` and `<input>.graded.mp4`.
+The Agent can reason over a lightweight proxy while the accepted dense
+trajectory is rendered from a separate high-resolution decode. MP4 delivery
+uses high-quality H.264; artifacts are currently silent because audio muxing is
+outside the grading benchmark contract.
+
+The optional Resolve package contains a static 33³ `.cube` LUT and a time-aware
+`.dctl` for every shot, plus a frame-accurate conform manifest and
+`apply_dynamic_grade.py`. Anchor frames and trajectory turns are retained while
+redundant dense samples are compressed; tune the maximum per-parameter error
+with `--resolve-keyframe-error` (default `0.015`).
+
+Resolve's public API can apply LUTs and keyframed DRX grades but cannot create
+arbitrary Color-page parameter keyframes. The generated Resolve 19.1+ DCTL uses
+`TIMELINE_FRAME_INDEX` to interpolate the exported controls at render time.
+After conforming the timeline to exactly one clip per manifest shot, create a
+dedicated empty Color node at the same index on every clip, then run:
+
 ```bash
-CUDA_VISIBLE_DEVICES=1 python infer_4kagent.py \
-  --input_dir ./assets/profile_test_example/realworldsr \
-  --output_dir ./outputs/4KAgent_test/realworldsr \
-  --profile_name ExpSR_s4_P \
-  --tool_run_gpu_id 2
+python outputs/input_resolve/apply_dynamic_grade.py \
+  --lut-dir /path/already/configured/in/resolve \
+  --video-track 1 \
+  --node-index 2
 ```
 
-**Profiles use 'depictqa' as the VLM in perception agent:**
+The node index is mandatory so the script cannot silently choose which existing
+grade to replace. Direct scripting requires DaVinci Resolve to be running and
+its bundled scripting API to be available.
 
-**Joint IR and 4K SR:**
+MonetGPT's final adjustment JSON can also be converted without running its
+GIMP/NumPy image executor:
+
 ```bash
-# Set up depictqa in portal A:
-cd ./DepictQA
-conda activate depictqa
-CUDA_VISIBLE_DEVICES=0 python src/app_eval.py
-
-# 4KAgent inference in portal B:
-CUDA_VISIBLE_DEVICES=1 python infer_4kagent.py \
-  --input_dir ./assets/profile_test_example/4ksr \
-  --output_dir ./outputs/4KAgent_test/4ksr \
-  --profile_name FastGen4K_P \
-  --tool_run_gpu_id 2
+python monet_to_resolve.py \
+  --input outputs/monet_adjustments.json \
+  --output-dir outputs/monet_resolve
 ```
 
-We recommend the `FastGen4K_P` profile, which infers faster and has good perceptual quality. 
+The input may be one native MonetGPT adjustment object such as
+`{"Exposure": 20, "Highlights": -15, "Saturation": 8}`, or a `shots` array
+whose entries contain `shot_id`, optional frame bounds, and `adjustments`.
+Global controls are mapped to the shared GradeIR and baked into per-shot
+Resolve LUTs. The manifest records approximated and unsupported controls;
+use `--strict` to reject selective HSL, dehaze, spatial, or other controls that
+the current GradeIR cannot reproduce exactly.
 
-`tool_run_gpu_id` is used to specify the GPU to execute tools (restoration methods). For GPUs with larger VRAM, `tool_run_gpu_id` can be set as the same as `CUDA_VISIBLE_DEVICES`.
+To put this parameter path inside the normal critic/MCTS rollback transaction,
+configure it as an editor Agent:
 
-**Old Photo 4K SR**
-```bash
-# Set up depictqa in portal A:
-cd ./DepictQA
-conda activate depictqa
-CUDA_VISIBLE_DEVICES=0 python src/app_eval.py
-
-# 4KAgent inference in portal B:
-CUDA_VISIBLE_DEVICES=1 python infer_4kagent.py \
-  --input_dir ./assets/profile_test_example/opr \
-  --output_dir ./outputs/4KAgent_test/opr \
-  --profile_name OldP4K_P \
-  --tool_run_gpu_id 2
-```
-
-**Multiple Degradation Image Restoration**
-```bash
-# Set up depictqa in portal A:
-cd ./DepictQA
-conda activate depictqa
-CUDA_VISIBLE_DEVICES=0 python src/app_eval.py
-
-# 4KAgent inference in portal B:
-CUDA_VISIBLE_DEVICES=1 python infer_4kagent.py \
-  --input_dir ./assets/profile_test_example/mir \
-  --output_dir ./outputs/4KAgent_test/mir \
-  --profile_name GenMIR_P \
-  --tool_run_gpu_id 2
-```
-
-
-## Profile Setting
-
-We provide several example profiles in the `pipeline/profiles` as references for different use cases. Users can customize their own profiles based on these examples.
-
-
-## DIV4K-50 Dataset
-
-We provide the [DIV4K-50 dataset](https://huggingface.co/datasets/YSZuo/DIV4K-50) on 🤗 Hugging Face for easy access and reproducibility. To download the dataset, please ensure you have the huggingface_hub CLI installed:
-```bash
-python -m pip install "huggingface_hub[cli]"
-
-# run the following command to download the dataset to your local directory:
-huggingface-cli download --repo-type dataset YSZuo/DIV4K-50 --local-dir ./dataset/DIV4K-50
-
-# unzip the dataset:
-cd ./dataset/DIV4K-50
-unzip DIV4K-50.zip
-```
-
-
-## Useful Tools
-[1] Extract result images: [utils/image_export.py](utils/image_export.py) 
-
-Currently, 4KAgent will generate a folder which contains logs, images in inference. If we only need the final output image for calculating metrics (e.g., PSNR / SSIM / LPIPS / ...), we can use this script to extract every `output` image into a new folder with their original image name.
-
-[2] Extract result toolchain: [utils/toolchain_export.py](utils/toolchain_export.py) 
-
-If we run multiple images and we want to know the tool-chain of 4KAgent for each image, we can use this script to extract every tool-chain of each image. For example,
-
-```
-001: defocus deblurring@diffplugin-brightening@gamma_correction-super-resolution@diffbir.
-002: defocus deblurring@drbnet-super-resolution@diffbir.
-003: defocus deblurring@restormer-super-resolution@pisasr.
-```
-
-[3] Extract result tool for face restoration: [utils/face_restoration_tool_export.py](utils/face_restoration_tool_export.py)
-
-If we activate `face restoration` in the profile (set `FaceRestore` to true) and want to see which face restoration method is used, we can use this script. For example,
-
-```
-00006_01: codeformer
-00006_02: gfpgan
-00006_03: img
-```
-`img` means the original face.
-
-
-## Evaluation
-We have multiple evaluation scripts in [eval](./eval/) folder, which corresponding to different tasks:
-
-[1] [test_metrics_classic](./eval/test_metrics_classic.py): `crop_border=4`, Used to evaluate images in Classic SR task. (Set5, Set14, B100, Urban100, Manga109)
-
-[2] [test_metrics](./eval/test_metrics.py): Used to evaluate images in Real-World SR task. (RealSR, DRealSR)
-
-[3] [test_metrics_mio](./eval/test_metrics_mio.py): Used to evaluate images in Multi-Degradation Restoration task. (MiO100)
-
-[4] [test_metrics_nr](./eval/test_metrics_nr.py): Used to evaluate images with non-reference metrics (NIQE, MUSIQ, MANIQA (pipal), CLIPIQA). (RealSRSet (16x SR), DIV4K-50) We can also use [test_metrics_nr_low_gpu](./eval/test_metrics_nr_low_gpu.py) if the VRAM of GPU is limited (<24G).
-
-
-## Experiment Results
-
-We evaluate 4KAgent on 11 different image SR tasks. The overall experiment results are summarized as follows:
-| Task                          | Dataset           | Profile(s)                                      | Scale Factor | Result |
-|-------------------------------|-------------------|-------------------------------------------------|--------------|--------|
-| Classical SR                  | Set5              | ExpSR-s4-F, ExpSR-s4-P, GenSR-s4-P              |    4    | [Result](https://drive.google.com/drive/folders/1Ju24iX9mC8Yg_8NLcy-XbnQpW5l0GbAu?usp=drive_link)       |
-| Classical SR                  | Set14             | ExpSR-s4-F, ExpSR-s4-P, GenSR-s4-P              |    4    | [Result](https://drive.google.com/drive/folders/1KaLBVceysfmqeZgjV1OAyjQ3N0vyrWux?usp=drive_link)       |
-| Classical SR                  | B100              | ExpSR-s4-F, ExpSR-s4-P, GenSR-s4-P              |    4    | [Result](https://drive.google.com/drive/folders/1G7MnvyDnP6bwCoanMGG-vcFCI1A6zXYH?usp=drive_link)       |
-| Classical SR                  | Urban100          | ExpSR-s4-F, ExpSR-s4-P, GenSR-s4-P              |    4    | [Result](https://drive.google.com/drive/folders/1Fd52RajdelcNSIfLAyXNWEZsVqVyMnvC?usp=drive_link)       |
-| Classical SR                  | Manga109          | ExpSR-s4-F, ExpSR-s4-P, GenSR-s4-P              |    4    | [Result](https://drive.google.com/drive/folders/1hnIA63GOiyawMs8siiW3MN7AhuEfXuVR?usp=drive_link)       |
-| Real-World SR                 | DRealSR           | ExpSR-s4-F, ExpSR-s4-P, GenSR-s4-P              |    4    | [Result](https://drive.google.com/drive/folders/1wDArrO8TjT56kxH0LF790hEQqQY9M3KE?usp=drive_link)       |
-| Real-World SR                 | RealSR            | ExpSR-s4-F, ExpSR-s4-P, GenSR-s4-P              |    4    | [Result](https://drive.google.com/drive/folders/1vSkBn54ypcqd6k1QlLpZvey58eBC_4CY?usp=drive_link)       |
-| Multiple-Degradation IR       | MiO100            | GenMIR-P                                        |    4 *  | [Result](https://drive.google.com/drive/folders/12uC-KYuCaeoCA0RcgQHU3z9FuL_E0sG1?usp=drive_link)       |
-| Face Restoration              | WebPhoto-Test     | GenSRFR-s4-P                                    |    4    | [Result](https://drive.google.com/drive/folders/1hAGGg72A-tEtr78oqyN7JCdaLTr7kXzz?usp=drive_link)       |
-| 16x SR                        | RealSRSet         | Gen4K-P                                         |    16    | [Result](https://drive.google.com/drive/folders/1K2pIG-PTc1GRzSmbxyvVSFpHcuI11TbA?usp=drive_link)       |
-| Joint IR + 4K SR              | DIV4K-50          | Gen4K-P                                         |    16    | [Result](https://drive.google.com/drive/folders/1cDCRdfVzOrWX_AziLHInjJzhl5QR_rgN?usp=drive_link)       |
-| AIGC 4K SR **                    | GenAIBench-4K     | ExpSR-s4-P                                      |    4    | [Result](https://drive.google.com/file/d/1rw-evPx8w5uFtVqjVx97clKbDXsKB2Lx/view?usp=drive_link)       |
-| AIGC 4K SR **                    | DiffusionDB-4K    | ExpSR-s4-P                                      |    4    | [Result](https://drive.google.com/file/d/1L3XRiYb1_BiEmwvRtSkadWdicutY_OAF/view?usp=drive_link)       |
-| Remote Sensing SR             | AID               | AerSR-s4-F, AerSR-s4-P                          |    4    | [Result](https://drive.google.com/drive/folders/1Ntm1xQZmFUvw-UcSSmyYGTA5CsAY6NEL?usp=drive_link)       |
-| Remote Sensing SR             | DIOR              | AerSR-s4-F, AerSR-s4-P                          |    4    | [Result](https://drive.google.com/drive/folders/1lgVlYb0_ob2skc0in8qrSOoVyS1592iN?usp=drive_link)       |
-| Remote Sensing SR             | DOTA              | AerSR-s4-F, AerSR-s4-P, Aer4K-F, Aer4K-P        |    4, 16    | [Result](https://drive.google.com/drive/folders/1Uxbu7bzJcO6L1ATZecfTxe7651SO_r1_?usp=drive_link)       |
-| Remote Sensing SR             | WorldStrat        | AerSR-s4-F, AerSR-s4-P                          |    4    | [Result](https://drive.google.com/drive/folders/1anwNZ4lzYw49g7X-1vBMje494hZp5jtZ?usp=drive_link)       |
-| Fluorescence Microscopy Image SR | SR-CACO-2       | ExpSR-s2-F, ExpSR-s4-F, ExpSR-s8-F             |    2, 4, 8    | [Result](https://drive.google.com/drive/folders/1k42i-eLdxhdaOJRSB0DSLH4ihUrLfPiC?usp=drive_link)       |
-| Pathology Image SR            | bcSR              | ExpSR-s4-F, ExpSR-s8-F                          |    4, 8    | [Result](https://drive.google.com/drive/folders/1aF2fA-NVbd9B61KBRqSi3XuYtvt7kZHB?usp=drive_link)       |
-| Medical Image SR              | Chest X-ray 2017  | ExpSR-s4-F                                      |    4    | [Result](https://drive.google.com/drive/folders/1cvplHEtYf6IKrYmqfgl2Gd9w1wdcD_TG?usp=drive_link)       |
-| Medical Image SR              | Chest X-ray 14    | ExpSR-s4-F                                      |    4    | [Result](https://drive.google.com/drive/folders/1AxiFdhQic821vSqObIPzIYRERJYYwp6k?usp=drive_link)       |
-| Medical Image SR              | US-CASE           | ExpSR-s4-F                                      |    4    | [Result](https://drive.google.com/drive/folders/1WB1hYNLcRf8AxjPgNsensIpGxF7JERs1?usp=drive_link)       |
-| Medical Image SR              | MMUS1K            | ExpSR-s4-F                                      |    4    | [Result](https://drive.google.com/drive/folders/174V8ehE3PUApvLPCTWsv-i1XAAktVeb3?usp=drive_link)       |
-| Medical Image SR              | DRIVE             | ExpSR-s4-F                                      |    4    | [Result](https://drive.google.com/drive/folders/1CdXT6aoS_2AtQuJaz4KaODgh9S-ABRyQ?usp=drive_link)       |
-
-
-*: For LQ image which triggers `super-resolution` in 4KAgent with `GenMIR-P` profile (based on the resolution of the LQ image), the scale factor is set to 4.
-
-**: We use the standard sample prompt to evaluate the performance of 4KAgent in the AIGC domain. We employ no reference metrics (NIQE, MUSIQ-P, MANIQA, CLIPIQA) for evaluation, and we provide the test prompts for generation. (MUSIQ-P: a patch-applied variant that computes MUSIQ scores over non-overlapping 512 x 512 patches and averages them, thereby improving sensitivity to localized artifacts in ultra-high-resolution content.)
-
-We present the naming convention and detail of profiles used in these tasks in [profile_setup](./pipeline/profiles/profile_setup.md).
-
-## License
-This project is released under the [Apache 2.0 license](LICENSE).
-
-## Contact
-If you have any questions, please feel free to contact: `zuoyushen12@gmail.com`
-
-
-## Citation
-If you find our work useful in your research, we gratefully request that you consider citing our paper:
-```bibtex
-@article{zuo20254kagent,
-      title={4KAgent: Agentic Any Image to 4K Super-Resolution}, 
-      author={Yushen Zuo and Qi Zheng and Mingyang Wu and Xinrui Jiang and Renjie Li and Jian Wang and Yide Zhang and Gengchen Mai and Lihong V. Wang and James Zou and Xiaoyu Wang and Ming-Hsuan Yang and Zhengzhong Tu},
-      year={2025},
-      eprint={2507.07105},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV},
-      url={https://arxiv.org/abs/2507.07105}, 
+```json
+{
+  "name": "monet-parameter-editor",
+  "type": "monet_parameters",
+  "root": "/absolute/path/to/monetGPT",
+  "style": "balanced",
+  "reject_unsupported": true
 }
 ```
 
+The backend reads MonetGPT's final JSON rather than its rendered TIFF, creates
+the exact preview represented by the future Resolve LUT, and submits that
+preview to the existing critics. A rejected proposal is discarded by MCTS; if
+no Hero/shot trajectory passes, the video grade rolls back to identity.
 
-## Acknowledgements
+Copy `configs/photoagent_multi.example.json` to `configs/photoagent_multi.json`
+and export `OPENAI_API_KEY`. The supplied runtime uses OpenAI's native Responses
+API and one `gpt-5.6-sol` model for the storyboard, editor, and critic roles.
+The storyboard path performs a sparse whole-video overview, a full-frame
+physical scan, overlapping 20-second VL windows, dense boundary adjudication,
+task-aware Anchor ranking inside every verified shot, then selects a global
+HeroAnchor. The editor first develops and approves the Hero look; all remaining
+Anchors receive both the Hero source and accepted Hero grade as their visual
+matching reference. Add
+`--allow-storyboard-fallback` only for physical shot-detection ablations.
+MonetGPT and any command-line image editor can still be members of the editor
+pool.
 
-Our code is built upon [AgenticIR](https://github.com/Kaiwen-Zhu/AgenticIR), along with several excellent open-source restoration tools and vision-language models, which we concluded in [Toolbox](./Toolbox.md). We gratefully acknowledge the authors for their valuable contributions to the community.
+A fully local training-free baseline is available before configuring any model
+endpoint. It uses deterministic shot detection, the native parameter-search
+Editor, metric critics, and the same MCTS/rollback path:
 
+```bash
+python retouch_video.py \
+  --input input.mp4 \
+  --instruction "natural brighter grade" \
+  --offline-native \
+  --output outputs/input.native.grade.json
+```
+
+See [`VIDEO_PIPELINE.md`](VIDEO_PIPELINE.md) for the data contract, rollback
+semantics, and the exact boundary between integrated and optional components.
+See [`evaluation/README.md`](evaluation/README.md) for controlled parameter
+probes and the paired SDSD video benchmark.
+The frozen five-track benchmark card is
+[`evaluation/BENCHMARK.md`](evaluation/BENCHMARK.md).
+
+## Single-image retouching
+
+```bash
+python retouch_image.py \
+  --input input.jpg \
+  --output outputs/retouched.jpg \
+  --instruction "make it brighter, warm, and cinematic"
+```
+
+Add a local grayscale mask:
+
+```bash
+python retouch_image.py \
+  --input input.jpg \
+  --mask person_mask.png \
+  --output outputs/retouched.jpg \
+  --instruction "brighten the person and use a restrained cinematic look"
+```
+
+## Quality gate and rollback
+
+Rollback is enabled by default. The input image is the transaction checkpoint:
+if every rendered candidate violates the quality constraints, or the best valid
+candidate does not improve the evaluator score, the agent returns the input
+unchanged with zero parameters. The metadata contains `rolled_back` and
+`rollback_reason` so downstream video propagation can detect the decision.
+
+Require a larger score improvement before committing:
+
+```bash
+python retouch_image.py \
+  --input input.jpg \
+  --output outputs/retouched.jpg \
+  --instruction "warm cinematic portrait" \
+  --min-improvement 0.1
+```
+
+For ablations only, rollback can be disabled with `--no-rollback`.
+
+Each output image is accompanied by a JSON file containing the selected
+parameters, parameter covariance, plan, constraints, and evaluation metrics.
+
+## Bayesian/Langevin prototype
+
+```bash
+python -m bayesgrade.demo --frames 120 --budget 5
+python -m bayesgrade.demo_langevin --frames 120 --samples 16
+python -m bayesgrade.benchmark_synthetic --max-budget 5 --seeds 20
+```
+
+Python integration:
+
+```python
+from bayesgrade import BayesGradeRetouchPipeline
+
+result = BayesGradeRetouchPipeline().run(
+    frames,
+    instruction="warm cinematic portrait",
+    anchor_indices=[0],
+)
+
+print(result.parameter_mean.shape)  # [T, 12]
+print(result.next_anchor)
+```
+
+## Tests
+
+```bash
+python -m unittest discover -s tests
+```
+
+## Research documents
+
+- [`research/BAYESGRADE_RP.md`](research/BAYESGRADE_RP.md)
+- [`research/BAYESGRADE_EXPERIMENT_LOG.md`](research/BAYESGRADE_EXPERIMENT_LOG.md)
+- [`VIDEO_RETOUCH_AGENT_SURVEY.md`](VIDEO_RETOUCH_AGENT_SURVEY.md)
+- [`Video_Retouch_Agent_Survey.pptx`](Video_Retouch_Agent_Survey.pptx)

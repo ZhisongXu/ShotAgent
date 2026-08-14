@@ -1,98 +1,22 @@
 *.pth
-# *.pkl
 *.pytorch
 *.npz
 *.pt
 *.ckpt
 *.vscode
-src
 
-# Run history
-.history/
-
-
-# DepictQA
-DepictQA/
-
-
-# Datasets
-dataset/DIV4K_50/
-dataset/RealBlur/
-dataset/RealSRSet/
-dataset/SIDD/
-dataset/remote_sensing/
-dataset/Face_Images/
-dataset/basedata
-dataset/StableSR_testsets
-dataset/Classic_SR
-
-
-# Model git info
-executor/*/tools/*/.git/
-
-
-# cache and egg-info
 **/__pycache__/
 **/.eggs/
 **/*.egg-info/
+.pytest_cache/
 
-
-# output
 output/
 outputs/
+checkpoints/
+pretrained_ckpts*/
 
+.history/
+DepictQA/
 
-# Pretrained models
-checkpoints/*
-pretrained_ckpts*
-
-executor/super_resolution/tools/OSEDiff/pretrained_models/SD/
-executor/defocus_deblurring/tools/Diff-Plugin/pre-trained
-executor/defocus_deblurring/tools/LaKDNet/ckpts/Defocus
-executor/defocus_deblurring/tools/LaKDNet/ckpts/Motion
-
-executor/old_photo_restoration/tools/BOBL/Face_Detection/shape_predictor_68_face_landmarks.dat
-
-utils/face_eval_pretrained_models/identity
-
-utils/clib_fiqa/model/bpe_simple_vocab_16e6.txt.gz
-
-
-# Symbolic link folders
-executor/brightening/tools/AutoDIR
-executor/brightening/tools/Diff-Plugin
-executor/brightening/tools/maxim
-
-executor/dehazing/tools/AutoDIR
-executor/dehazing/tools/Diff-Plugin
-
-executor/denoising/tools/AutoDIR
-executor/denoising/tools/maxim
-executor/denoising/tools/X-Restormer
-executor/denoising/tools/Restormer
-
-executor/deraining/tools/maxim
-executor/deraining/tools/MPRNet
-executor/deraining/tools/Restormer
-executor/deraining/tools/X-Restormer
-executor/deraining/tools/AutoDIR
-executor/deraining/tools/Diff-Plugin
-
-executor/jpeg_compression_artifact_removal/tools/SwinIR
-
-executor/motion_deblurring/tools/LaKDNet
-executor/motion_deblurring/tools/NAFNet
-executor/motion_deblurring/tools/maxim
-executor/motion_deblurring/tools/MPRNet
-executor/motion_deblurring/tools/Restormer
-executor/motion_deblurring/tools/X-Restormer
-
-executor/super_resolution/tools/SwinIR
-executor/super_resolution/tools/X-Restormer
-executor/super_resolution/tools/NAFNet
-
-executor/defocus_deblurring/tools/AutoDIR/src
-
-
-# temp files & folders
-test_tool/results
+# Nested third-party repositories retained in the archived 4KAgent tree.
+legacy/4kagent/**/.git/

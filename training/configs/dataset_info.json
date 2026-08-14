@@ -1,0 +1,35 @@
+{
+  "dynamicgrade_storyboard": {
+    "file_name": "dynamicgrade_storyboard.json",
+    "formatting": "sharegpt",
+    "columns": {
+      "messages": "messages",
+      "images": "images"
+    },
+    "tags": {
+      "role_tag": "role",
+      "content_tag": "content",
+      "user_tag": "user",
+      "assistant_tag": "assistant",
+      "system_tag": "system"
+    }
+  },
+  "dynamicgrade_anchor_grade": {
+    "file_name": "dynamicgrade_anchor_grade.json",
+    "formatting": "sharegpt",
+    "columns": {"messages": "messages", "images": "images"},
+    "tags": {
+      "role_tag": "role", "content_tag": "content", "user_tag": "user",
+      "assistant_tag": "assistant", "system_tag": "system"
+    }
+  },
+  "dynamicgrade_critique": {
+    "file_name": "dynamicgrade_critique.json",
+    "formatting": "sharegpt",
+    "columns": {"messages": "messages", "images": "images"},
+    "tags": {
+      "role_tag": "role", "content_tag": "content", "user_tag": "user",
+      "assistant_tag": "assistant", "system_tag": "system"
+    }
+  }
+}

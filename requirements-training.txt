@@ -1,0 +1,7 @@
+-r requirements.txt
+datasets>=3,<5
+peft>=0.14,<1
+trl>=0.16,<1
+
+# Install LLaMA-Factory from its pinned upstream revision for the SFT config in
+# training/configs. It is kept external to avoid silently changing trainer APIs.

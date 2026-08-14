@@ -1,0 +1,16 @@
+model_name_or_path: CRITIC_MODEL_PATH
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_target: all
+dataset: dynamicgrade_critique
+dataset_dir: training/data
+template: MODEL_TEMPLATE
+cutoff_len: 8192
+output_dir: outputs/critic_agent_lora
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 16
+learning_rate: 0.00005
+num_train_epochs: 3
+bf16: true
+gradient_checkpointing: true
