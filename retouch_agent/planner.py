@@ -85,6 +85,35 @@ class HeuristicRetouchPlanner:
                 "中间调提亮",
             )
         )
+        automatic_retouch = any(
+            phrase in text
+            for phrase in (
+                "retouch",
+                "auto enhance",
+                "auto grade",
+                "enhance photo",
+                "improve photo",
+                "修图",
+                "自动修图",
+                "自动调色",
+                "优化画面",
+            )
+        )
+
+        if automatic_retouch and reference is None:
+            # A restrained, broadly useful default look: recover tonal range,
+            # add separation, and favor vibrance over blunt saturation.
+            if stats["luminance"] < 0.58:
+                exposure += 0.08
+            elif stats["luminance"] > 0.68:
+                exposure -= 0.06
+            contrast += 0.14
+            highlights -= 0.12
+            shadows += 0.08
+            vibrance += 0.14
+            tone += 0.08
+            target["contrast"] = min(0.28, target["contrast"] + 0.04)
+            target["saturation"] = min(0.65, target["saturation"] + 0.035)
 
         if any(word in text for word in ("warm", "golden", "温暖", "暖色", "暖")):
             temperature += 0.30

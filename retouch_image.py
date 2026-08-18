@@ -28,7 +28,13 @@ def main() -> None:
         "--min-improvement",
         type=float,
         default=0.0,
-        help="Minimum evaluator-score gain required to commit an edit.",
+        help="Minimum target-alignment gain required to commit an edit.",
+    )
+    parser.add_argument(
+        "--min-perceptual-delta",
+        type=float,
+        default=0.01,
+        help="Minimum RGB RMS change required to commit a visible edit.",
     )
     args = parser.parse_args()
 
@@ -38,6 +44,7 @@ def main() -> None:
         candidate_count=args.candidates,
         rollback_on_failure=not args.no_rollback,
         minimum_score_improvement=args.min_improvement,
+        minimum_perceptual_delta=args.min_perceptual_delta,
     )
     image = Image.open(args.input).convert("RGB")
     reference = Image.open(args.reference).convert("RGB") if args.reference else None

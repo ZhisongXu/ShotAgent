@@ -30,6 +30,7 @@ class AnchorRetouchResult:
     accepted_candidates: int
     rolled_back: bool
     rollback_reason: Optional[str]
+    decision: dict[str, object]
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -45,6 +46,7 @@ class AnchorRetouchResult:
             "accepted_candidates": self.accepted_candidates,
             "rolled_back": self.rolled_back,
             "rollback_reason": self.rollback_reason,
+            "decision": self.decision,
         }
 
 
@@ -66,6 +68,7 @@ class AnchorRetouchAgent:
         seed: int = 7,
         rollback_on_failure: bool = True,
         minimum_score_improvement: float = 0.0,
+        minimum_perceptual_delta: float = 0.01,
     ) -> None:
         if candidate_count < 1 or covariance_top_k < 1:
             raise ValueError("candidate_count and covariance_top_k must be positive.")
@@ -77,6 +80,22 @@ class AnchorRetouchAgent:
         self.seed = int(seed)
         self.rollback_on_failure = bool(rollback_on_failure)
         self.minimum_score_improvement = float(minimum_score_improvement)
+        if minimum_perceptual_delta < 0.0:
+            raise ValueError("minimum_perceptual_delta must be non-negative.")
+        self.minimum_perceptual_delta = float(minimum_perceptual_delta)
+
+    @staticmethod
+    def _directional_quality(evaluation: CandidateEvaluation) -> float:
+        """Measure target alignment independently of edit magnitude.
+
+        Third-party evaluators can omit the target-error metric; their score is
+        then used as the compatibility fallback.
+        """
+
+        target_error = evaluation.metrics.get("target_error")
+        if target_error is None:
+            return evaluation.score
+        return -float(target_error)
 
     @staticmethod
     def _pil_to_tensor(image: Image.Image) -> torch.Tensor:
@@ -129,21 +148,56 @@ class AnchorRetouchAgent:
             for index in range(self.candidate_count)
         ]
         valid_indices = [index for index, result in enumerate(evaluations) if result.valid]
-        pool = valid_indices or list(range(self.candidate_count))
-        ranked = sorted(pool, key=lambda index: evaluations[index].score, reverse=True)
-        best = ranked[0]
-
         checkpoint_evaluation = self.evaluator.evaluate(source, source, plan)
+        checkpoint_quality = self._directional_quality(checkpoint_evaluation)
+        perceptual_deltas = (
+            (rendered - source.unsqueeze(0)).square().mean(dim=(1, 2, 3)).sqrt()
+        ).detach().cpu().numpy()
+        perceptible_indices = [
+            index
+            for index in valid_indices
+            if perceptual_deltas[index] >= self.minimum_perceptual_delta
+        ]
+        directional_indices = [
+            index
+            for index in perceptible_indices
+            if self._directional_quality(evaluations[index])
+            > checkpoint_quality + self.minimum_score_improvement
+        ]
+
+        if self.rollback_on_failure:
+            pool = directional_indices
+        else:
+            pool = valid_indices or list(range(self.candidate_count))
+        fallback_pool = valid_indices or list(range(self.candidate_count))
+        ranked = sorted(
+            pool or fallback_pool,
+            key=lambda index: evaluations[index].score,
+            reverse=True,
+        )
+        best = ranked[0]
+        best_quality = self._directional_quality(evaluations[best])
+        decision = {
+            "policy": "directional_perceptual_v2",
+            "minimum_directional_improvement": self.minimum_score_improvement,
+            "minimum_perceptual_delta": self.minimum_perceptual_delta,
+            "valid_candidates": len(valid_indices),
+            "perceptible_candidates": len(perceptible_indices),
+            "directional_candidates": len(directional_indices),
+            "checkpoint_directional_quality": checkpoint_quality,
+            "best_candidate_directional_quality": best_quality,
+            "directional_improvement": best_quality - checkpoint_quality,
+            "best_candidate_perceptual_delta": float(perceptual_deltas[best]),
+        }
+
         rollback_reason: Optional[str] = None
         if self.rollback_on_failure:
             if not valid_indices:
                 rollback_reason = "no_valid_candidate"
-            elif (
-                checkpoint_evaluation.valid
-                and evaluations[best].score
-                <= checkpoint_evaluation.score + self.minimum_score_improvement
-            ):
-                rollback_reason = "insufficient_quality_improvement"
+            elif not perceptible_indices:
+                rollback_reason = "no_perceptible_improvement"
+            elif not directional_indices:
+                rollback_reason = "no_directional_improvement"
 
         if rollback_reason is not None:
             parameter_count = len(PARAMETER_NAMES)
@@ -158,6 +212,7 @@ class AnchorRetouchAgent:
                 accepted_candidates=len(valid_indices),
                 rolled_back=True,
                 rollback_reason=rollback_reason,
+                decision=decision,
             )
 
         top = ranked[: min(self.covariance_top_k, len(ranked))]
@@ -178,4 +233,5 @@ class AnchorRetouchAgent:
             accepted_candidates=len(valid_indices),
             rolled_back=False,
             rollback_reason=None,
+            decision=decision,
         )

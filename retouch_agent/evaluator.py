@@ -34,6 +34,7 @@ class RetouchEvaluator:
     def evaluate(self, source: Tensor, output: Tensor, plan: RetouchPlan) -> CandidateEvaluation:
         stats = self._statistics(output)
         fidelity_l1 = float(torch.mean(torch.abs(output - source)))
+        perceptual_delta = float(torch.mean((output - source).square()).sqrt())
         target = plan.targets
 
         errors = {
@@ -42,16 +43,20 @@ class RetouchEvaluator:
             "saturation_error": abs(stats["saturation"] - target.get("saturation", stats["saturation"])) / 0.20,
             "warmth_error": abs(stats["warmth"] - target.get("warmth", stats["warmth"])) / 0.12,
         }
-        score = -sum(errors.values()) - 1.5 * fidelity_l1
-        score -= 5.0 * stats["highlight_clipping"] + 3.0 * stats["shadow_crushing"]
-        valid = (
-            stats["highlight_clipping"] < 0.18
-            and stats["shadow_crushing"] < 0.30
-            and fidelity_l1 < 0.45
-        )
+        target_error = sum(errors.values())
+        # Fidelity remains a tie-breaker, but target-directed grading must be
+        # allowed to beat the identity checkpoint.  The previous 1.5 weight
+        # frequently made "do nothing" the highest-scoring result.
+        score = -target_error - 0.35 * fidelity_l1
+        # Clipping and crushing remain observable metrics, but artistic edits
+        # are no longer vetoed by fixed safety thresholds.  ``valid`` now only
+        # represents whether the executor produced a numerically usable image.
+        valid = bool(torch.isfinite(output).all())
         metrics = {
             **stats,
             **errors,
+            "target_error": target_error,
             "fidelity_l1": fidelity_l1,
+            "perceptual_delta": perceptual_delta,
         }
         return CandidateEvaluation(score=float(score), valid=valid, metrics=metrics)

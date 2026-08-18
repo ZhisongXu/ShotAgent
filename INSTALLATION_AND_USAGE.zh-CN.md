@@ -75,8 +75,16 @@ python -m pip install -r requirements-training.txt
 python retouch_image.py \
   --input input.jpg \
   --output outputs/retouched.jpg \
-  --instruction "自然、稍暖、保护肤色"
+  --instruction "自动修图"
 ```
+
+单图默认使用方向性质量门：候选相对原图更接近规划的调色目标，并达到可感知变化后
+就会提交。高光剪切和暗部压缩仍记录为诊断指标，但不会否决艺术性调色。`retouch`、
+`修图`、`自动调色` 等泛化指令会采用克制的默认调色方向，不再把零参数原图作为最优
+结果。可用
+`--min-perceptual-delta` 调整显著性阈值（默认 RGB RMS `0.01`），用
+`--min-improvement` 调整最小方向收益。旁路 JSON 的 `decision` 字段记录每层候选数、
+方向收益和感知变化。
 
 视频：
 

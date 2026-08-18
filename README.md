@@ -182,13 +182,21 @@ python retouch_image.py \
   --instruction "brighten the person and use a restrained cinematic look"
 ```
 
-## Quality gate and rollback
+## Directional quality gate and rollback
 
-Rollback is enabled by default. The input image is the transaction checkpoint:
-if every rendered candidate violates the quality constraints, or the best valid
-candidate does not improve the evaluator score, the agent returns the input
-unchanged with zero parameters. The metadata contains `rolled_back` and
-`rollback_reason` so downstream video propagation can detect the decision.
+Rollback is enabled by default. The input image is the transaction checkpoint,
+but identity is not treated as a preferred result. A candidate is committed
+when it produces a perceptible RGB change and moves closer to the planner's
+grading target than the input. Clipping and crushing metrics remain in the
+metadata for diagnosis, but they do not veto an artistic grade. Generic
+`retouch`, `修图`, and automatic-enhancement instructions receive a balanced
+default grade with highlight recovery, opened shadows, tonal separation, and
+restrained vibrance. An executor or third-party evaluator can still mark a
+numerically broken candidate invalid.
+
+The sidecar metadata contains `rolled_back`, `rollback_reason`, and a `decision`
+object with the perceptual delta, directional improvement, thresholds, and
+candidate counts for every gate.
 
 Require a larger score improvement before committing:
 
@@ -201,6 +209,8 @@ python retouch_image.py \
 ```
 
 For ablations only, rollback can be disabled with `--no-rollback`.
+The visibility threshold can be tuned with `--min-perceptual-delta` (RGB RMS,
+default `0.01`). `--min-improvement` controls the minimum target-alignment gain.
 
 Each output image is accompanied by a JSON file containing the selected
 parameters, parameter covariance, plan, constraints, and evaluation metrics.
