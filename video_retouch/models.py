@@ -124,6 +124,7 @@ class HeroAnchorRecord:
     ranked_candidates: tuple[int, ...]
     selection_reason: str
     attempts: tuple[dict[str, object], ...] = ()
+    source_video: str = "target_video"
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -135,6 +136,7 @@ class HeroAnchorRecord:
             "ranked_candidates": list(self.ranked_candidates),
             "selection_reason": self.selection_reason,
             "attempts": list(self.attempts),
+            "source_video": self.source_video,
         }
 
 

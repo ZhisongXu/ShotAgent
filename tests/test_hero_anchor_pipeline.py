@@ -4,7 +4,7 @@ import numpy as np
 from PIL import Image
 
 from retouch_agent import RetouchExecutor, RetouchParameters
-from video_retouch.backends import AnchorGrade
+from video_retouch.backends import AnchorGrade, NativeRetouchBackend
 from video_retouch.critic import ShotCritique
 from video_retouch.models import ShotPlan, StoryboardPlan
 from video_retouch.pipeline import DynamicGradePipeline
@@ -168,6 +168,60 @@ class HeroAnchorPipelineTest(unittest.TestCase):
                 "matched_to_hero_frame"
             ],
             1,
+        )
+
+    def test_native_hero_is_graded_for_generic_natural_instruction(self):
+        pipeline = DynamicGradePipeline(
+            shot_planner=TwoShotHeroPlanner(),
+            anchor_backend=NativeRetouchBackend(),
+            critic=HeroAwareCritic(),
+            maximum_attempts=2,
+        )
+
+        result = pipeline.run(self._frames(), 3.0, "自然调色")
+
+        self.assertIsNotNone(result.hero_anchor)
+        self.assertGreater(
+            float(np.linalg.norm(result.hero_anchor.parameters)),
+            0.0,
+        )
+
+    def test_external_reference_video_supplies_graded_hero(self):
+        editor = ReferenceRecordingEditor()
+        pipeline = DynamicGradePipeline(
+            shot_planner=TwoShotHeroPlanner(),
+            anchor_backend=editor,
+            critic=HeroAwareCritic(),
+            maximum_attempts=2,
+        )
+        reference_frames = [
+            Image.fromarray(
+                np.full((18, 24, 3), 170 - index * 8, dtype=np.uint8),
+                mode="RGB",
+            )
+            for index in range(6)
+        ]
+
+        result = pipeline.run(
+            self._frames(),
+            3.0,
+            "coherent cinematic look",
+            reference_frames=reference_frames,
+            reference_fps=3.0,
+        )
+
+        self.assertEqual(result.hero_anchor.source_video, "reference_video")
+        self.assertEqual(result.hero_anchor.frame_index, 1)
+        # Frame 1 exists in both videos. It must still be re-graded against the
+        # external Hero instead of accidentally reusing the reference grade.
+        self.assertIn((1, 1), editor.hero_matches)
+        self.assertEqual(
+            result.shots[0].search_memory["hero_source_video"],
+            "reference_video",
+        )
+        self.assertEqual(
+            result.hero_anchor_attempts[0]["source_video"],
+            "reference_video",
         )
 
     def test_rejected_hero_rolls_back_and_tries_next_ranked_anchor(self):

@@ -98,6 +98,22 @@ python retouch_video.py \
   --resolve-package-dir outputs/input_resolve
 ```
 
+如果有参考视频，可增加：
+
+```bash
+python retouch_video.py \
+  --input target.mp4 \
+  --reference-video reference.mp4 \
+  --instruction "参考该视频建立自然电影感，并应用到目标视频" \
+  --offline-native \
+  --output outputs/target.reference.grade.json \
+  --video-output-dir outputs/target_videos
+```
+
+系统会在参考视频中选择并调色 HeroShot，再把参考 Hero 原帧和获批调色帧共同作为目标
+视频所有 Anchor 的视觉参考。只为目标视频生成逐帧参数和成片；JSON 中
+`hero_anchor.source_video` 为 `reference_video`，并额外记录 `reference_video` 元数据。
+
 主要输出：
 
 - `*.grade.json`：镜头边界、各镜头 Anchor、HeroAnchor、基础参数、逐帧参数、置信度和
@@ -115,14 +131,14 @@ HeroAnchor 选择、参数提案和视觉评审；最终像素和 Resolve LUT/DC
 2. 复制配置，不要把真实 key 写进 JSON 或提交到 Git：
 
 ```bash
-cp configs/photoagent_multi.example.json configs/photoagent_multi.json
+cp configs/unified_vl.example.json configs/unified_vl.json
 export OPENAI_API_KEY="你的_key"
 ```
 
 Windows PowerShell：
 
 ```powershell
-Copy-Item configs/photoagent_multi.example.json configs/photoagent_multi.json
+Copy-Item configs/unified_vl.example.json configs/unified_vl.json
 $env:OPENAI_API_KEY="你的_key"
 ```
 
@@ -132,7 +148,7 @@ $env:OPENAI_API_KEY="你的_key"
 python retouch_video.py \
   --input input.mp4 \
   --instruction "natural warm cinematic grade with protected skin tones" \
-  --agent-config configs/photoagent_multi.json \
+  --backend-config configs/unified_vl.json \
   --output outputs/input.grade.json \
   --trajectory-output outputs/input.rollouts.jsonl \
   --video-output-dir outputs/input_videos \
@@ -140,6 +156,24 @@ python retouch_video.py \
   --analysis-max-side 960 \
   --render-max-side 1920
 ```
+
+新配置只创建一个 `UnifiedVLVideoBackend` 和一个共享 VL client；分镜、Hero/Anchor
+参数规划和视觉复核都由这个 client 分阶段完成，确定性执行器和安全指标属于后端内部
+算子。输出 JSON 会包含 `operation_graph` 和脱敏的 `backend_runtime`。
+
+operation graph v1 已真实支持 `global_grade`、单调 `tone_curve`、选择性
+`hsl_grade` 和登记过的 3D `.cube` LUT。附加操作按镜头规划，在镜头首帧、Anchor、
+尾帧上执行预览，再经过确定性安全检查和同一 VL client 复核；任一检查失败会整组回滚。
+LUT 只能通过 `lut_catalog` 中的 ID 选择相对配置文件目录的文件，VL 不能提供任意路径。
+`masked_grade`、`denoise` 和 `generative_edit` 仍必须为 `false`。
+启用 curve/HSL/LUT 后，每个已接受镜头会增加一次操作规划调用；如果提案通过确定性
+检查，还会增加一次视觉复核调用。把三者设为 `false` 即恢复只做全局调色的调用成本。
+使用 LUT 时，把文件放在配置文件同级或子目录，并登记 ID，例如
+`"lut_catalog": {"film-soft": "luts/film-soft.cube"}`。
+
+目前 Resolve/DCTL 只编码全局 12 维参数。如果本次运行接受了 curve、HSL 或 LUT，且同时
+请求 `--resolve-package-dir`，CLI 会明确报错，避免导出与预览成片不一致的包。旧的
+`--agent-config` 入口仍保留给多 editor/Monet 实验。
 
 示例配置默认使用 OpenAI Responses API 和 `gpt-5.6-sol`。如使用其他兼容服务，
 修改 `provider`、`base_url`、`model` 和 `api_key_env`；兼容 Chat Completions 的服务
@@ -227,6 +261,7 @@ python monet_to_resolve.py \
   "root": "/absolute/path/to/monetGPT",
   "python_executable": "/absolute/path/to/monetgpt/python",
   "style": "balanced",
+  "hero_match_strength": 0.35,
   "reject_unsupported": true
 }
 ```
@@ -235,8 +270,10 @@ Linux conda 环境的解释器一般可用 `which python` 查询，Windows 可�
 `Get-Command python`。`style` 只能是 `balanced`、`vibrant` 或 `retro`。
 
 此路径读取 MonetGPT 最终 JSON，用 ShotAgent 的确定性执行器制作预览，再交给同一组
-critics/MCTS。未通过质量门、不比原图更好或包含被拒绝参数时，候选会回滚；通过后才会
-传播至该镜头并导出 Resolve 文件。
+critics/MCTS。MonetGPT 仍按官方单图接口运行，但只处理 Hero 和各镜头的少量 Anchor；
+目标 Anchor 参数按 `hero_match_strength` 向获批 Hero look 对齐，随后由共享贝叶斯扩散器
+生成整段逐帧轨迹，不会逐帧调用 MonetGPT。`0` 表示完全采用当前 Anchor 的 Monet
+结果，`1` 表示完全采用 Hero 参数，默认 `0.35`。包含被拒绝参数的候选仍可回滚。
 
 ## 6. JarvisArt 当前怎样使用
 

@@ -66,7 +66,7 @@ class MultiAgentRuntime:
         return self.anchor_backends[0]
 
 
-def _vision_client(config: object, role: str) -> VisionLanguageClient:
+def build_vision_client(config: object, role: str) -> VisionLanguageClient:
     if not isinstance(config, dict):
         raise ValueError(f"{role} agent config must be an object.")
     provider = str(config.get("provider", ""))
@@ -76,6 +76,11 @@ def _vision_client(config: object, role: str) -> VisionLanguageClient:
         "api_key_env": str(config.get("api_key_env", "")),
         "timeout_seconds": float(config.get("timeout_seconds", 180.0)),
         "max_image_side": int(config.get("max_image_side", 1280)),
+        "max_retries": int(config.get("max_retries", 0)),
+        "retry_base_seconds": float(config.get("retry_base_seconds", 2.0)),
+        "retry_max_seconds": float(config.get("retry_max_seconds", 60.0)),
+        "json_mode": bool(config.get("json_mode", False)),
+        "max_json_retries": int(config.get("max_json_retries", 0)),
     }
     if provider == "openai_compatible":
         return OpenAICompatibleVisionClient(
@@ -109,19 +114,21 @@ def _anchor_backend(config: object, index: int) -> AnchorRetouchBackend:
         if not isinstance(raw_stages, list) or not raw_stages:
             raise ValueError(f"{name} stages must be a non-empty list.")
         return VLAnchorBackend(
-            _vision_client(config, name),
+            build_vision_client(config, name),
             stages=tuple(str(stage) for stage in raw_stages),
             candidate_count=int(config.get("candidate_count", 16)),
             seed=int(config.get("seed", 7)),
             name=name,
             use_mkl_prior=bool(config.get("use_mkl_prior", True)),
             mkl_strength=float(config.get("mkl_strength", 0.35)),
-            mkl_projection_iterations=int(
-                config.get("mkl_projection_iterations", 40)
-            ),
+            mkl_projection_iterations=int(config.get("mkl_projection_iterations", 40)),
         )
     if anchor_type == "monet":
-        return MonetRetouchBackend(Path(str(config.get("root", ""))), name=name)
+        return MonetRetouchBackend(
+            Path(str(config.get("root", ""))),
+            name=name,
+            hero_match_strength=float(config.get("hero_match_strength", 0.35)),
+        )
     if anchor_type == "monet_parameters":
         return MonetParameterBackend(
             Path(str(config.get("root", ""))),
@@ -130,12 +137,14 @@ def _anchor_backend(config: object, index: int) -> AnchorRetouchBackend:
             style=str(config.get("style", "balanced")),
             timeout_seconds=float(config.get("timeout_seconds", 600.0)),
             reject_unsupported=bool(config.get("reject_unsupported", True)),
+            hero_match_strength=float(config.get("hero_match_strength", 0.35)),
         )
     if anchor_type == "command":
         return CommandRetouchBackend(
             str(config.get("command", "")),
             name=name,
             timeout_seconds=float(config.get("timeout_seconds", 600.0)),
+            hero_match_strength=float(config.get("hero_match_strength", 0.35)),
         )
     if anchor_type == "native":
         return NativeRetouchBackend(name=name)
@@ -172,7 +181,7 @@ def _critic_ensemble(
             if name != critic.name:
                 critic.name = name
         elif critic_type == "vision_model":
-            client = _vision_client(config, name)
+            client = build_vision_client(config, name)
             if first_client is None:
                 first_client = client
             critic = VisionReviewCritic(
@@ -200,7 +209,7 @@ def load_multi_agent_runtime(path: Path) -> MultiAgentRuntime:
     if not isinstance(payload, dict):
         raise ValueError("Agent config must be a JSON object.")
     storyboard_config = payload.get("storyboard")
-    storyboard = _vision_client(storyboard_config, "storyboard")
+    storyboard = build_vision_client(storyboard_config, "storyboard")
     assert isinstance(storyboard_config, dict)
     storyboard_settings = LongVideoStoryboardSettings.from_dict(
         storyboard_config.get("long_video")

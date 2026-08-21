@@ -18,5 +18,8 @@ pretrained_ckpts*/
 .history/
 DepictQA/
 
+# Local API credentials; never commit these files.
+.secrets/
+
 # Nested third-party repositories retained in the archived 4KAgent tree.
 legacy/4kagent/**/.git/

@@ -17,7 +17,7 @@ from PIL import Image
 
 from retouch_agent import AnchorRetouchAgent, RetouchExecutor, RetouchParameters
 from retouch_agent.parameters import PARAMETER_LOWER_BOUNDS, PARAMETER_UPPER_BOUNDS
-from retouch_agent.planner import HeuristicRetouchPlanner, RetouchPlan
+from retouch_agent.planner import HeuristicRetouchPlanner, RetouchPlan, image_statistics
 
 from .clients import VisionLanguageClient
 from .color_science import LinearMongeKantorovichMatcher
@@ -42,6 +42,7 @@ class HeroAnchorReference:
     shot_id: int
     source: Image.Image
     grade: AnchorGrade
+    external: bool = False
 
 
 class AnchorRetouchBackend(Protocol):
@@ -54,6 +55,55 @@ class AnchorRetouchBackend(Protocol):
         frame_index: int,
         shot_id: int,
     ) -> AnchorGrade: ...
+
+    def grade_with_reference(
+        self,
+        image: Image.Image,
+        instruction: str,
+        frame_index: int,
+        shot_id: int,
+        hero_reference: HeroAnchorReference,
+    ) -> AnchorGrade: ...
+
+
+def _match_grade_to_hero(
+    image: Image.Image,
+    grade: AnchorGrade,
+    hero_reference: HeroAnchorReference,
+    strength: float,
+    executor: RetouchExecutor,
+) -> AnchorGrade:
+    """Adapt an image-only backend result to the shared Hero look parameters."""
+
+    strength = float(np.clip(strength, 0.0, 1.0))
+    base = grade.parameters.to_vector()
+    hero = hero_reference.grade.parameters.to_vector()
+    matched = (1.0 - strength) * base + strength * hero
+    # Video propagation currently has no tracked local masks.
+    matched[9:] = 0.0
+    parameters = RetouchParameters.from_vector(matched, clamp=True)
+    preview = executor.apply(image.convert("RGB"), parameters)
+    assert isinstance(preview, Image.Image)
+    return AnchorGrade(
+        frame_index=grade.frame_index,
+        parameters=parameters,
+        preview=preview,
+        valid=grade.valid,
+        score=grade.score,
+        backend=grade.backend,
+        metadata={
+            **grade.metadata,
+            "matched_to_hero_frame": hero_reference.frame_index,
+            "matched_to_hero_shot": hero_reference.shot_id,
+            "hero_source_video": (
+                "reference_video" if hero_reference.external else "target_video"
+            ),
+            "hero_match_method": "shared_parameter_blend",
+            "hero_match_strength": strength,
+            "parameters_before_hero_match": grade.parameters.to_dict(),
+            "video_extension": "anchor_parameter_diffusion",
+        },
+    )
 
 
 class NativeRetouchBackend:
@@ -111,6 +161,9 @@ class NativeRetouchBackend:
                 "shot_id": shot_id,
                 "matched_to_hero_frame": hero_reference.frame_index,
                 "matched_to_hero_shot": hero_reference.shot_id,
+                "hero_source_video": (
+                    "reference_video" if hero_reference.external else "target_video"
+                ),
                 **result.to_dict(),
             },
         )
@@ -322,9 +375,13 @@ class VLAnchorBackend:
                 "planner": "dedicated-vl-anchor-agent",
                 "model_id": self.client.model_id,
                 "stages": stage_records,
+                "target_source": "model_developed_preview",
             },
             initial_parameters=parameters,
-            targets=heuristic_plan.targets,
+            # The VL editor has already developed the Hero/Anchor preview.
+            # Search should refine toward that approved model direction rather
+            # than replace it with a keyword heuristic that may be identity.
+            targets=image_statistics(preview),
             constraints=tuple(
                 dict.fromkeys([*heuristic_plan.constraints, *constraints])
             ),
@@ -350,6 +407,15 @@ class VLAnchorBackend:
                 ),
                 "matched_to_hero_shot": (
                     None if hero_reference is None else hero_reference.shot_id
+                ),
+                "hero_source_video": (
+                    None
+                    if hero_reference is None
+                    else (
+                        "reference_video"
+                        if hero_reference.external
+                        else "target_video"
+                    )
                 ),
                 "mkl_prior": (
                     None
@@ -458,6 +524,7 @@ class CommandRetouchBackend:
         timeout_seconds: float = 600.0,
         estimator: Optional[ParameterEstimator] = None,
         maximum_reconstruction_error: float = 0.18,
+        hero_match_strength: float = 0.35,
     ) -> None:
         self.command = (
             shlex.split(command) if isinstance(command, str) else list(command)
@@ -469,6 +536,10 @@ class CommandRetouchBackend:
         self.timeout_seconds = float(timeout_seconds)
         self.estimator = estimator or ParameterEstimator()
         self.maximum_reconstruction_error = float(maximum_reconstruction_error)
+        if not 0.0 <= hero_match_strength <= 1.0:
+            raise ValueError("hero_match_strength must be between 0 and 1.")
+        self.hero_match_strength = float(hero_match_strength)
+        self.executor = RetouchExecutor()
 
     def grade(
         self,
@@ -520,6 +591,23 @@ class CommandRetouchBackend:
                 },
             )
 
+    def grade_with_reference(
+        self,
+        image: Image.Image,
+        instruction: str,
+        frame_index: int,
+        shot_id: int,
+        hero_reference: HeroAnchorReference,
+    ) -> AnchorGrade:
+        grade = self.grade(image, instruction, frame_index, shot_id)
+        return _match_grade_to_hero(
+            image,
+            grade,
+            hero_reference,
+            self.hero_match_strength,
+            self.executor,
+        )
+
 
 class MonetRetouchBackend(CommandRetouchBackend):
     """Adapter for the official MonetGPT ``inference_cli.py single`` command."""
@@ -567,6 +655,7 @@ class MonetParameterBackend:
         style: str = "balanced",
         timeout_seconds: float = 600.0,
         reject_unsupported: bool = True,
+        hero_match_strength: float = 0.35,
     ) -> None:
         repository = Path(repository).resolve()
         entrypoint = repository / "inference_cli.py"
@@ -581,6 +670,9 @@ class MonetParameterBackend:
         self.style = style
         self.timeout_seconds = float(timeout_seconds)
         self.reject_unsupported = bool(reject_unsupported)
+        if not 0.0 <= hero_match_strength <= 1.0:
+            raise ValueError("hero_match_strength must be between 0 and 1.")
+        self.hero_match_strength = float(hero_match_strength)
         self.executor = RetouchExecutor()
 
     def grade(
@@ -643,6 +735,7 @@ class MonetParameterBackend:
                     "instruction": instruction,
                     "style": self.style,
                     "parameter_source": "monetgpt-final-json",
+                    "video_extension": "anchor_parameter_diffusion",
                     "resolve_transform_preview": True,
                     "conversion": conversion.to_dict(),
                     "rollback_eligible": True,
@@ -655,6 +748,23 @@ class MonetParameterBackend:
                     "stderr": completed.stderr[-2000:],
                 },
             )
+
+    def grade_with_reference(
+        self,
+        image: Image.Image,
+        instruction: str,
+        frame_index: int,
+        shot_id: int,
+        hero_reference: HeroAnchorReference,
+    ) -> AnchorGrade:
+        grade = self.grade(image, instruction, frame_index, shot_id)
+        return _match_grade_to_hero(
+            image,
+            grade,
+            hero_reference,
+            self.hero_match_strength,
+            self.executor,
+        )
 
 
 def load_parameter_file(path: Path) -> RetouchParameters:

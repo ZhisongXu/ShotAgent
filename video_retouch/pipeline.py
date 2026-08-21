@@ -178,30 +178,55 @@ class DynamicGradePipeline:
         frames: Sequence[Image.Image],
         fps: float,
         instruction: str,
+        *,
+        reference_frames: Optional[Sequence[Image.Image]] = None,
+        reference_fps: Optional[float] = None,
     ) -> GradeGraph:
         normalized = tuple(frame.convert("RGB") for frame in frames)
         if not normalized:
             raise ValueError("At least one video frame is required.")
+        if reference_frames is not None and not reference_frames:
+            raise ValueError("Reference video must contain at least one frame.")
+        if reference_frames is not None and (
+            reference_fps is None or reference_fps <= 0.0
+        ):
+            raise ValueError("reference_fps must be positive with reference_frames.")
         storyboard = self.shot_planner.plan(
             normalized,
             fps,
             instruction,
             anchors_per_shot=self.anchors_per_shot,
         )
-        hero_candidates = list(storyboard.hero_anchor_candidates)
-        if storyboard.hero_anchor_frame is not None:
+        external_reference = reference_frames is not None
+        hero_frames = (
+            tuple(frame.convert("RGB") for frame in reference_frames)
+            if reference_frames is not None
+            else normalized
+        )
+        hero_storyboard = (
+            self.shot_planner.plan(
+                hero_frames,
+                float(reference_fps),
+                instruction,
+                anchors_per_shot=self.anchors_per_shot,
+            )
+            if external_reference
+            else storyboard
+        )
+        hero_candidates = list(hero_storyboard.hero_anchor_candidates)
+        if hero_storyboard.hero_anchor_frame is not None:
             hero_candidates = [
-                storyboard.hero_anchor_frame,
+                hero_storyboard.hero_anchor_frame,
                 *(
                     frame
                     for frame in hero_candidates
-                    if frame != storyboard.hero_anchor_frame
+                    if frame != hero_storyboard.hero_anchor_frame
                 ),
             ]
         if not hero_candidates:
             hero_candidates = [
                 frame
-                for shot in storyboard.shots
+                for shot in hero_storyboard.shots
                 for frame in shot.anchor_frames
             ]
         hero_candidates = list(dict.fromkeys(hero_candidates))
@@ -218,12 +243,13 @@ class DynamicGradePipeline:
         for hero_round, frame_index in enumerate(
             hero_candidates[: self.maximum_hero_attempts], start=1
         ):
-            hero_shot = self._shot_for_frame(storyboard, frame_index)
+            hero_shot = self._shot_for_frame(hero_storyboard, frame_index)
             reference, audit = self.search.select_hero_reference(
-                normalized,
+                hero_frames,
                 instruction,
                 frame_index,
                 hero_shot.shot_id,
+                external=external_reference,
             )
             audit = {"round": hero_round, **audit}
             if reference is None:
@@ -310,8 +336,11 @@ class DynamicGradePipeline:
                 backend=selected_reference.grade.backend,
                 score=selected_reference.grade.score,
                 ranked_candidates=tuple(hero_candidates),
-                selection_reason=storyboard.hero_selection_reason,
+                selection_reason=hero_storyboard.hero_selection_reason,
                 attempts=tuple(global_attempts),
+                source_video=(
+                    "reference_video" if external_reference else "target_video"
+                ),
             )
         trajectory = np.zeros((len(normalized), 12), dtype=np.float64)
         for grade in shot_grades:

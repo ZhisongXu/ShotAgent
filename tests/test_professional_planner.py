@@ -20,6 +20,16 @@ class ProfessionalPlannerTest(unittest.TestCase):
         self.assertGreater(parameters.vibrance, 0.0)
         self.assertGreater(parameters.tone_curve, 0.0)
 
+    def test_natural_grade_is_treated_as_automatic_retouch(self):
+        plan = HeuristicRetouchPlanner().plan(
+            Image.new("RGB", (24, 20), (110, 120, 130)),
+            "自然调色",
+        )
+
+        self.assertGreater(plan.initial_parameters.exposure, 0.0)
+        self.assertGreater(plan.initial_parameters.contrast, 0.0)
+        self.assertGreater(plan.initial_parameters.vibrance, 0.0)
+
     def test_ocean_commercial_intent_protects_range_and_biases_water_cool(self):
         plan = HeuristicRetouchPlanner().plan(
             Image.new("RGB", (24, 20), (90, 120, 145)),

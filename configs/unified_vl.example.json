@@ -1,0 +1,93 @@
+{
+  "backend": {
+    "type": "unified_vl_video",
+    "provider": "openai_responses",
+    "base_url": "https://api.openai.com/v1",
+    "model": "gpt-5.6-sol",
+    "api_key_env": "OPENAI_API_KEY",
+    "reasoning_effort": "high",
+    "image_detail": "high",
+    "max_output_tokens": 8192,
+    "max_image_side": 1280,
+
+    "operations": {
+      "global_grade": true,
+      "tone_curve": true,
+      "hsl_grade": true,
+      "masked_grade": false,
+      "lut": false,
+      "denoise": false,
+      "deblur": false,
+      "generative_edit": false
+    },
+
+    "lut_catalog": {},
+
+    "operation_policy": {
+      "maximum_operations_per_shot": 3,
+      "maximum_additional_fidelity_l1": 0.12,
+      "maximum_added_clipping": 0.03,
+      "minimum_review_score": 0.6,
+      "maximum_planning_attempts": 2,
+      "strict": false
+    },
+
+    "storyboard": {
+      "allow_fallback": false,
+      "long_video": {
+        "overview_frames": 24,
+        "window_seconds": 20.0,
+        "overlap_seconds": 4.0,
+        "max_window_images": 28,
+        "technical_candidate_threshold": 0.14,
+        "hard_cut_threshold": 0.42,
+        "boundary_context_frames": 3,
+        "boundary_batch_size": 4,
+        "boundary_merge_tolerance_seconds": 0.2,
+        "boundary_accept_confidence": 0.55,
+        "anchor_candidates_per_shot": 10,
+        "anchor_shots_per_call": 3,
+        "max_anchor_images_per_call": 30,
+        "hero_max_images_per_call": 32,
+        "hero_nominees_per_batch": 3,
+        "hero_candidate_count": 5,
+        "minimum_shot_seconds": 0.4
+      }
+    },
+
+    "editor": {
+      "stages": ["lighting", "white_balance_and_color", "tone"],
+      "candidate_count": 16,
+      "seed": 7,
+      "use_mkl_prior": true,
+      "mkl_strength": 0.35,
+      "mkl_projection_iterations": 40
+    },
+
+    "review": {
+      "enabled": true,
+      "strict": true,
+      "focus": "instruction adherence, preservation, professional color, and cross-frame coherence",
+      "metric_weight": 0.55,
+      "visual_weight": 0.45,
+      "acceptance_score": 0.6
+    },
+
+    "safety": {
+      "maximum_fidelity_l1": 0.42,
+      "maximum_clipping": 0.2,
+      "maximum_temporal_error": 0.1,
+      "maximum_parameter_jerk": 0.2,
+      "maximum_anchor_error": 0.12,
+      "rollback_on_failure": true
+    },
+
+    "search": {
+      "maximum_evaluations": 12,
+      "maximum_hero_attempts": 3,
+      "exploration_constant": 1.41421356237,
+      "rejection_penalty": 0.25,
+      "seed": 7
+    }
+  }
+}

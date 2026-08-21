@@ -58,7 +58,7 @@ class _VisionHandler(BaseHTTPRequestHandler):
                     }
                 ]
             }
-        elif "<TASK_ANCHOR_GRADE>" in prompt:
+        elif "<TASK_ANCHOR_GRADE>" in prompt or "<TASK_ANCHOR_MATCH>" in prompt:
             if 'stage "lighting"' in prompt:
                 updates = {"exposure": 0.4}
             else:
@@ -76,6 +76,30 @@ class _VisionHandler(BaseHTTPRequestHandler):
                 "instruction_score": 0.9,
                 "content_score": 0.9,
                 "consistency_score": 0.9,
+                "reasons": [],
+            }
+        elif "<TASK_OPERATION_PLAN>" in prompt:
+            payload = {
+                "operations": [
+                    {
+                        "type": "tone_curve",
+                        "parameters": {
+                            "channel": "rgb",
+                            "points": [[0, 0], [0.5, 0.55], [1, 1]],
+                            "strength": 0.5,
+                        },
+                        "confidence": 0.9,
+                        "reason": "gentle midtone refinement",
+                    }
+                ],
+                "diagnosis": ["slight midtone lift"],
+            }
+        elif "<TASK_OPERATION_REVIEW>" in prompt:
+            payload = {
+                "accept": True,
+                "score": 0.9,
+                "instruction_score": 0.9,
+                "preservation_score": 0.9,
                 "reasons": [],
             }
         else:
@@ -103,6 +127,7 @@ class VideoCliEndToEndTest(unittest.TestCase):
             with tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 video = root / "input.avi"
+                reference_video = root / "reference.avi"
                 writer = cv2.VideoWriter(
                     str(video), cv2.VideoWriter_fourcc(*"MJPG"), 4.0, (24, 20)
                 )
@@ -111,6 +136,17 @@ class VideoCliEndToEndTest(unittest.TestCase):
                 for value in (45, 50, 55, 60):
                     writer.write(np.full((20, 24, 3), value, dtype=np.uint8))
                 writer.release()
+                reference_writer = cv2.VideoWriter(
+                    str(reference_video),
+                    cv2.VideoWriter_fourcc(*"MJPG"),
+                    4.0,
+                    (24, 20),
+                )
+                if not reference_writer.isOpened():
+                    self.skipTest("MJPG reference-video writer is unavailable")
+                for value in (100, 110, 120, 130):
+                    reference_writer.write(np.full((20, 24, 3), value, dtype=np.uint8))
+                reference_writer.release()
 
                 endpoint = f"http://127.0.0.1:{server.server_port}/v1"
                 config = {
@@ -130,6 +166,7 @@ class VideoCliEndToEndTest(unittest.TestCase):
                             "api_key_env": "TEST_VISION_KEY",
                             "stages": ["lighting"],
                             "candidate_count": 1,
+                            "use_mkl_prior": False,
                         },
                         {
                             "name": "color-editor",
@@ -140,6 +177,7 @@ class VideoCliEndToEndTest(unittest.TestCase):
                             "api_key_env": "TEST_VISION_KEY",
                             "stages": ["white_balance_and_color"],
                             "candidate_count": 1,
+                            "use_mkl_prior": False,
                         },
                     ],
                     "evaluators": [
@@ -176,6 +214,8 @@ class VideoCliEndToEndTest(unittest.TestCase):
                         "retouch_video.py",
                         "--input",
                         str(video),
+                        "--reference-video",
+                        str(reference_video),
                         "--instruction",
                         "make it brighter while preserving content",
                         "--agent-config",
@@ -197,6 +237,12 @@ class VideoCliEndToEndTest(unittest.TestCase):
 
                 payload = json.loads(output.read_text(encoding="utf-8"))
                 self.assertEqual(payload["orchestrator"], "photoagent-uct-mcts")
+                self.assertEqual(
+                    payload["hero_anchor"]["source_video"], "reference_video"
+                )
+                self.assertEqual(
+                    payload["reference_video"]["role"], "external_hero_source"
+                )
                 self.assertEqual(len(payload["agent_runtime"]["editors"]), 2)
                 self.assertTrue(payload["shots"][0]["accepted"])
                 self.assertGreater(

@@ -233,6 +233,28 @@ class DynamicGradePipelineTest(unittest.TestCase):
             "test/anchor-vision-model",
         )
 
+    def test_vl_hero_keeps_model_grade_for_generic_look_instruction(self) -> None:
+        client = FakeAnchorVisionClient()
+        backend = VLAnchorBackend(
+            client,
+            stages=("lighting",),
+            candidate_count=1,
+            seed=2,
+        )
+        source = Image.fromarray(
+            np.full((24, 28, 3), 128, dtype=np.uint8), mode="RGB"
+        )
+
+        grade = backend.grade(source, "coherent natural look", 3, 0)
+
+        self.assertTrue(grade.valid)
+        self.assertGreater(grade.parameters.exposure, 0.0)
+        self.assertFalse(grade.metadata["rolled_back"])
+        self.assertEqual(
+            grade.metadata["plan"]["diagnosis"]["target_source"],
+            "model_developed_preview",
+        )
+
     def test_vl_anchor_matching_receives_original_and_graded_hero_pair(self) -> None:
         client = FakeAnchorVisionClient()
         backend = VLAnchorBackend(

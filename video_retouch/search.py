@@ -131,6 +131,7 @@ class AestheticMCTSSearch:
             try:
                 if (
                     hero_reference is not None
+                    and not hero_reference.external
                     and frame_index == hero_reference.frame_index
                 ):
                     grade = hero_reference.grade
@@ -157,6 +158,11 @@ class AestheticMCTSSearch:
                                     "backend_does_not_support_visual_reference"
                                 ),
                                 "requested_hero_frame": hero_reference.frame_index,
+                                "hero_source_video": (
+                                    "reference_video"
+                                    if hero_reference.external
+                                    else "target_video"
+                                ),
                             },
                         )
             except Exception as error:
@@ -199,6 +205,8 @@ class AestheticMCTSSearch:
         instruction: str,
         frame_index: int,
         shot_id: int,
+        *,
+        external: bool = False,
     ) -> tuple[Optional[HeroAnchorReference], dict[str, object]]:
         hero_shot = ShotPlan(
             shot_id=shot_id,
@@ -238,6 +246,7 @@ class AestheticMCTSSearch:
         audit = {
             "hero_frame": frame_index,
             "hero_shot_id": shot_id,
+            "source_video": "reference_video" if external else "target_video",
             "proposals": [
                 {
                     "backend": evaluation.grades[0].backend,
@@ -263,6 +272,7 @@ class AestheticMCTSSearch:
                 shot_id=shot_id,
                 source=frames[frame_index].convert("RGB"),
                 grade=selected.grades[0],
+                external=external,
             ),
             audit,
         )
@@ -606,6 +616,15 @@ class AestheticMCTSSearch:
             "critic": self.critic.name,
             "hero_anchor_frame": (
                 None if hero_reference is None else hero_reference.frame_index
+            ),
+            "hero_source_video": (
+                None
+                if hero_reference is None
+                else (
+                    "reference_video"
+                    if hero_reference.external
+                    else "target_video"
+                )
             ),
             "exploration_constant": self.exploration_constant,
             "maximum_evaluations": self.maximum_evaluations,

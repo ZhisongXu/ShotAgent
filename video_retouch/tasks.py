@@ -20,6 +20,8 @@ HERO_ANCHOR_SELECTION_TASK = "<TASK_HERO_ANCHOR_SELECTION>"
 ANCHOR_GRADE_TASK = "<TASK_ANCHOR_GRADE>"
 ANCHOR_MATCH_TASK = "<TASK_ANCHOR_MATCH>"
 CRITIQUE_TASK = "<TASK_CRITIQUE>"
+OPERATION_PLAN_TASK = "<TASK_OPERATION_PLAN>"
+OPERATION_REVIEW_TASK = "<TASK_OPERATION_REVIEW>"
 
 AGENT_SYSTEM_PROMPT = """
 You are one specialized component in a professional multi-model video color
@@ -313,4 +315,70 @@ All scores are in [0,1]. Reject visible artifacts, content changes, clipping,
 inconsistent grading, or a shot that fails the HeroAnchor look contract. When
 rejecting because the current Anchor is unrepresentative, recommended_anchor
 may be an absolute frame ID visible in the supplied labels; otherwise use null.
+""".strip()
+
+
+def operation_plan_prompt(
+    instruction: str,
+    shot_id: int,
+    start_frame: int,
+    end_frame: int,
+    global_parameters: dict[str, float],
+    enabled_operations: list[str],
+    lut_ids: list[str],
+    maximum_operations: int,
+) -> str:
+    return f"""
+{OPERATION_PLAN_TASK}
+The deterministic global grade is already applied. Inspect the ordered
+source/global-preview pairs sampled at the shot start, grading Anchor, and shot
+end, then decide whether a small number of shot-wide additional editable
+operations materially improves the user's request. Returning no operations is
+valid and preferred over unnecessary edits.
+
+Instruction: {instruction}
+Shot: {shot_id}, frames {start_frame} through {end_frame}
+Global parameters: {json.dumps(global_parameters, ensure_ascii=False)}
+Enabled operation types: {json.dumps(enabled_operations)}
+Configured LUT IDs: {json.dumps(lut_ids)}
+Maximum operations: {maximum_operations}
+
+Contracts:
+- tone_curve parameters: channel is rgb/red/green/blue; points contains 2-8
+  monotonic [input,output] pairs in [0,1], starting at x=0 and ending at x=1;
+  strength is in [0,1].
+- hsl_grade parameters: hue_center [0,360], hue_width [5,180], hue_shift
+  [-45,45], saturation [-0.75,0.75], lightness [-0.35,0.35], strength [0,1].
+- lut parameters: lut_id must be one of the configured IDs and strength [0,1].
+Do not return global_grade, masks, restoration, generative edits, unknown
+fields, or an operation type that is not enabled.
+
+Return JSON only:
+{{"operations":[{{"type":"tone_curve","parameters":{{"channel":"rgb",
+"points":[[0,0],[0.5,0.53],[1,1]],"strength":0.5}},
+"confidence":0.8,"reason":"..."}}],"diagnosis":["..."]}}
+""".strip()
+
+
+def operation_review_prompt(
+    instruction: str,
+    shot_id: int,
+    operations: list[dict[str, object]],
+) -> str:
+    return f"""
+{OPERATION_REVIEW_TASK}
+Review a proposed deterministic post-grade operation stack. The images are the
+source Anchor, the accepted global-grade preview, and the preview after the
+additional operations. Accept only if the additional operations improve the
+instruction without clipping, hue artifacts, broken skin/memory colors, or an
+unnecessarily strong change.
+
+Instruction: {instruction}
+Shot: {shot_id}
+Operations: {json.dumps(operations, ensure_ascii=False)}
+
+Return JSON only:
+{{"accept":true,"score":0.0,"reasons":["..."],
+"instruction_score":0.0,"preservation_score":0.0}}
+All scores are in [0,1].
 """.strip()

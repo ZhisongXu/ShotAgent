@@ -222,8 +222,25 @@ class PhotoAgentStyleCritic:
                 ]
             )
         )
-        clipping = float(
-            np.mean([np.mean((after <= 0.005) | (after >= 0.995)) for after in output])
+        source_clipping_masks = [
+            (before <= 0.005) | (before >= 0.995) for before in source
+        ]
+        output_clipping_masks = [
+            (after <= 0.005) | (after >= 0.995) for after in output
+        ]
+        source_clipping = float(
+            np.mean([np.mean(mask) for mask in source_clipping_masks])
+        )
+        clipping = float(np.mean([np.mean(mask) for mask in output_clipping_masks]))
+        added_clipping = float(
+            np.mean(
+                [
+                    np.mean(after & ~before)
+                    for before, after in zip(
+                        source_clipping_masks, output_clipping_masks
+                    )
+                ]
+            )
         )
         temporal_error, frame_risk = _motion_compensated_residual_error(source, output)
         if len(frame_parameters) > 2:
@@ -255,6 +272,8 @@ class PhotoAgentStyleCritic:
         metrics = {
             "fidelity_l1": fidelity,
             "clipping_fraction": clipping,
+            "source_clipping_fraction": source_clipping,
+            "added_clipping_fraction": added_clipping,
             "motion_compensated_residual_error": temporal_error,
             "parameter_jerk": jerk,
             "anchor_reconstruction_l1": anchor_error,
@@ -276,7 +295,7 @@ class PhotoAgentStyleCritic:
             reasons.append("anchor_backend_rejected")
         if fidelity > self.maximum_fidelity_l1:
             reasons.append("content_fidelity")
-        if clipping > self.maximum_clipping:
+        if added_clipping > self.maximum_clipping:
             reasons.append("highlight_or_shadow_clipping")
         if temporal_error > self.maximum_temporal_error:
             reasons.append("temporal_edit_residual")
@@ -310,7 +329,7 @@ class PhotoAgentStyleCritic:
 
         normalized_penalty = (
             fidelity / max(self.maximum_fidelity_l1, 1e-8)
-            + clipping / max(self.maximum_clipping, 1e-8)
+            + added_clipping / max(self.maximum_clipping, 1e-8)
             + temporal_error / max(self.maximum_temporal_error, 1e-8)
             + jerk / max(self.maximum_parameter_jerk, 1e-8)
             + anchor_error / max(self.maximum_anchor_error, 1e-8)

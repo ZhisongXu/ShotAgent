@@ -3,23 +3,23 @@
 This repository is being refactored from the original **4KAgent** restoration
 system into a data-efficient, interpretable image/video retouching Agent.
 
-The primary video stack is:
+The primary video stack is exposed through one `UnifiedVLVideoBackend`:
 
 ```text
 Video Perceiver: full-video scan + hierarchical VL shot/Anchor planning
   → rank per-shot Anchors into a global HeroAnchor shortlist
   → develop and approve one HeroAnchor as the master look
   → match every other shot Anchor to the accepted Hero visual reference
-  → UCT-MCTS trajectory planner with action memory
-  → multiple independent editing Agents / MonetGPT / external tools
+  → one VL editor producing editable global-grade operations
   → deterministic RetouchExecutor + Bayesian temporal parameter field
-  → multiple visual critics + deterministic temporal safety veto
-  → reward back-propagation, Anchor replacement, Hero reselection, and rollback
+  → the same VL client reviews previews + deterministic temporal safety veto
+  → Anchor replacement, Hero reselection, and transactional rollback
 ```
 
-The deployed pipeline follows PhotoAgent's agent-in-the-loop structure while
-remaining model-family neutral. Perception, editing, and evaluation can use
-different OpenAI-compatible multimodal endpoints or external editing tools.
+The public runtime uses one model endpoint for perception, editing decisions,
+and visual review. Deterministic pixel operators and safety metrics are internal
+capabilities rather than separately configured backends. The previous
+multi-agent manifest remains available as a compatibility path.
 
 ## What is implemented
 
@@ -30,9 +30,11 @@ different OpenAI-compatible multimodal endpoints or external editing tools.
 - tournament-style HeroAnchor selection across all shot Anchors;
 - visual shot matching against the accepted graded HeroAnchor;
 - training-free heuristic planner retained only as an explicit ablation/fallback;
-- provider-neutral multi-model Agent configuration;
-- real UCT-MCTS selection, expansion, simulation, and reward back-propagation;
-- competing editing-Agent proposals and independent critic ensemble;
+- provider-neutral single-backend configuration with one shared VL client;
+- versioned operation graph with global grade, tone curves, selective HSL, and
+  cataloged 3D LUTs;
+- legacy multi-editor UCT-MCTS selection and reward back-propagation;
+- legacy competing editing-Agent proposals and independent critic ensemble;
 - per-shot action memory, trajectory export, and transactional rollback;
 - Anchor parameter covariance output;
 - Bayesian temporal parameter field;
@@ -57,8 +59,9 @@ final parameter-rendered result can also be exported for visual inspection.
 ```bash
 python retouch_video.py \
   --input input.mp4 \
+  --reference-video reference.mp4 \
   --instruction "natural warm cinematic grade with protected skin tones" \
-  --agent-config configs/photoagent_multi.json \
+  --backend-config configs/unified_vl.json \
   --output outputs/input.grade.json \
   --trajectory-output outputs/input.rollouts.jsonl \
   --video-output-dir outputs/input_videos \
@@ -66,6 +69,13 @@ python retouch_video.py \
   --analysis-max-side 960 \
   --render-max-side 1920
 ```
+
+`--reference-video` is optional. When supplied, the storyboard Agent selects
+the HeroShot from that video, the editor develops its grade, and all target
+video Anchors match the pair of reference source frame and accepted graded
+reference frame. Only the target video receives the resulting dense trajectory
+and rendered output. The grade JSON identifies the Hero with
+`"source_video": "reference_video"` and records reference-video metadata.
 
 The video directory contains `<input>.source.mp4` and `<input>.graded.mp4`.
 The Agent can reason over a lightweight proxy while the accepted dense
@@ -122,18 +132,24 @@ configure it as an editor Agent:
   "type": "monet_parameters",
   "root": "/absolute/path/to/monetGPT",
   "style": "balanced",
+  "hero_match_strength": 0.35,
   "reject_unsupported": true
 }
 ```
 
 The backend reads MonetGPT's final JSON rather than its rendered TIFF, creates
 the exact preview represented by the future Resolve LUT, and submits that
-preview to the existing critics. A rejected proposal is discarded by MCTS; if
-no Hero/shot trajectory passes, the video grade rolls back to identity.
+preview to the existing critics. MonetGPT remains a single-image call: it runs
+only on selected Hero/shot Anchors, blends target-Anchor parameters toward the
+accepted Hero look, and lets the shared Bayesian diffuser create the full video
+trajectory. `hero_match_strength` controls that blend from `0` (independent
+Monet result) to `1` (Hero parameters), with `0.35` as the default. A rejected
+proposal is discarded by MCTS; if no Hero/shot trajectory passes, the video
+grade rolls back to identity.
 
-Copy `configs/photoagent_multi.example.json` to `configs/photoagent_multi.json`
+Copy `configs/unified_vl.example.json` to `configs/unified_vl.json`
 and export `OPENAI_API_KEY`. The supplied runtime uses OpenAI's native Responses
-API and one `gpt-5.6-sol` model for the storyboard, editor, and critic roles.
+API and one shared `gpt-5.6-sol` client for storyboard, editor, and review roles.
 The storyboard path performs a sparse whole-video overview, a full-frame
 physical scan, overlapping 20-second VL windows, dense boundary adjudication,
 task-aware Anchor ranking inside every verified shot, then selects a global
@@ -141,8 +157,28 @@ HeroAnchor. The editor first develops and approves the Hero look; all remaining
 Anchors receive both the Hero source and accepted Hero grade as their visual
 matching reference. Add
 `--allow-storyboard-fallback` only for physical shot-detection ablations.
-MonetGPT and any command-line image editor can still be members of the editor
-pool.
+The output includes `operation_graph` and a sanitized `backend_runtime`
+manifest. Operation-graph v1 executes `global_grade`, monotonic `tone_curve`,
+selective `hsl_grade`, and cataloged 3D `.cube` LUT operations. Additional
+operations are proposed per shot, previewed at the shot start/Anchor/end,
+reviewed by deterministic safety gates and the shared VL client, and committed
+or rolled back as one stack. LUT IDs resolve only to relative files explicitly
+listed under `lut_catalog`; the model cannot provide arbitrary paths.
+`masked_grade` and `generative_edit` still fail configuration validation.
+With tone/HSL/LUT enabled, each accepted shot adds one operation-planning call
+and, when a non-empty stack passes deterministic checks, one review call. Set
+all three flags to `false` to retain the global-grade-only cost profile. To use
+a LUT, place it beside or below the backend config and register it, for example
+`"lut_catalog": {"film-soft": "luts/film-soft.cube"}`.
+
+Resolve export currently represents only the global parameter trajectory. If a
+run accepts curve, HSL, or LUT post-operations while `--resolve-package-dir` is
+requested, the CLI stops with an explicit unsupported-operation error rather
+than exporting a visually incomplete package.
+
+The older `--agent-config configs/photoagent_multi.json` path is retained for
+experiments that explicitly require MonetGPT, command tools, or competing
+editor pools.
 
 A fully local training-free baseline is available before configuring any model
 endpoint. It uses deterministic shot detection, the native parameter-search

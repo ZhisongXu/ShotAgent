@@ -5,10 +5,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
 from PIL import Image
 
+from retouch_agent import RetouchExecutor, RetouchParameters
 from video_retouch import DynamicGradePipeline
-from video_retouch.backends import MonetParameterBackend
+from video_retouch.backends import (
+    AnchorGrade,
+    HeroAnchorReference,
+    MonetParameterBackend,
+)
 from video_retouch.monet_adapter import (
     convert_monet_adjustments,
     export_monet_resolve_package,
@@ -130,6 +136,74 @@ class MonetAdapterTest(unittest.TestCase):
             self.assertAlmostEqual(grade.parameters.exposure, 0.2)
             self.assertTrue(grade.metadata["rollback_eligible"])
             self.assertNotEqual(grade.preview.getpixel((0, 0)), (70, 80, 90))
+
+    def test_parameter_backend_matches_hero_through_shared_interface(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = self._fake_monet_repository(
+                Path(directory), {"Exposure": 20, "Saturation": 5}
+            )
+            backend = MonetParameterBackend(
+                repository,
+                hero_match_strength=0.5,
+            )
+            hero_source = Image.new("RGB", (24, 20), (90, 100, 110))
+            hero_parameters = RetouchParameters(exposure=0.8, saturation=0.15)
+            hero_grade = AnchorGrade(
+                frame_index=4,
+                parameters=hero_parameters,
+                preview=RetouchExecutor().apply(hero_source, hero_parameters),
+                valid=True,
+                score=0.9,
+                backend="hero-editor",
+            )
+            reference = HeroAnchorReference(
+                4,
+                1,
+                hero_source,
+                hero_grade,
+                external=True,
+            )
+
+            grade = backend.grade_with_reference(
+                Image.new("RGB", (24, 20), (70, 80, 90)),
+                "match the reference look",
+                7,
+                2,
+                reference,
+            )
+
+            self.assertAlmostEqual(grade.parameters.exposure, 0.5)
+            self.assertAlmostEqual(grade.parameters.saturation, 0.10)
+            self.assertEqual(
+                grade.metadata["hero_match_method"],
+                "shared_parameter_blend",
+            )
+            self.assertEqual(
+                grade.metadata["hero_source_video"],
+                "reference_video",
+            )
+
+    def test_monet_single_image_calls_produce_video_trajectory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = self._fake_monet_repository(
+                Path(directory), {"Exposure": 20, "Saturation": 5}
+            )
+            frames = tuple(
+                Image.fromarray(
+                    np.full((20, 24, 3), 70 + index * 3, dtype=np.uint8),
+                    mode="RGB",
+                )
+                for index in range(4)
+            )
+            result = DynamicGradePipeline(
+                anchor_backend=MonetParameterBackend(repository),
+                maximum_attempts=1,
+                maximum_hero_attempts=1,
+            ).run(frames, 4.0, "natural grade")
+
+            self.assertIsNotNone(result.hero_anchor)
+            self.assertFalse(result.shots[0].rolled_back)
+            self.assertGreater(float(result.frame_parameters[:, 0].mean()), 0.0)
 
     def test_unsupported_monet_grade_triggers_global_rollback(self):
         with tempfile.TemporaryDirectory() as directory:

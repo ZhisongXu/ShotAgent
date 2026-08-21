@@ -5,7 +5,8 @@
 Input:
 
 ```text
-video file + natural-language grading instruction
+target video file + natural-language grading instruction
++ optional reference video file
 ```
 
 Output:
@@ -29,6 +30,7 @@ video decode
   -> dense before/after VL adjudication merges and verifies boundaries
   -> per-shot diverse candidate generation + VL Anchor ranking
   -> tournament ranking selects a global HeroAnchor shortlist
+       -> when a reference video is supplied, rank and develop HeroShots there
   -> editor/critic look development approves the HeroAnchor grade
   -> every other shot Anchor is matched to Hero source + accepted Hero grade
   -> Lab-space MKL proposes a conservative distribution match
@@ -114,6 +116,7 @@ Method references:
   "hero_anchor": {
     "frame": 42,
     "shot_id": 1,
+    "source_video": "target_video",
     "parameters": [],
     "backend": "lighting-editor",
     "attempts": []
@@ -141,9 +144,40 @@ Method references:
 }
 ```
 
+With `--reference-video`, `hero_anchor.frame` and its ranked candidates use the
+reference video's frame coordinate system, `hero_anchor.source_video` is
+`reference_video`, and the top-level `reference_video` object records its path,
+dimensions, frame rate, and frame count. Target-shot keyframes always remain in
+the target video's coordinate system.
+
 `--compact` omits the dense trajectory while retaining sparse keyframes.
 
-## Multi-model runtime
+## Unified single-backend runtime
+
+`configs/unified_vl.example.json` is the primary runtime contract. It creates
+one `UnifiedVLVideoBackend`, one vision client, and one VL editor. The same
+client performs storyboard perception, editable parameter planning, and visual
+review; deterministic rendering, safety metrics, diffusion, and rollback are
+internal operators rather than public backends.
+
+Run it with `--backend-config`. The result contains a sanitized
+`backend_runtime` manifest and a versioned `operation_graph`. Version 1 executes
+accepted per-shot `global_grade` keyframes, monotonic RGB/channel tone curves,
+selective HSL adjustments, and cataloged 3D `.cube` LUTs. Post-grade operations
+are constant inside one shot, previewed on its start/Anchor/end samples, and
+committed or rolled back as one stack after deterministic and VL review.
+Catalog paths are relative to and confined within the backend-config directory.
+Mask, restoration, and generative operations remain rejected until their
+temporal contracts exist.
+
+The current Resolve exporter encodes only `global_grade`. It refuses a package
+when an accepted post-grade operation would otherwise be omitted.
+
+The unified backend owns `DynamicGradePipeline` internally. Its trajectory
+search has exactly one editor and therefore searches Anchor replacement and
+rollback trajectories, not competing editor identities.
+
+## Legacy multi-model runtime
 
 `configs/photoagent_multi.example.json` defines the Video Perceiver, editing
 roles, evaluator roles, safety-veto weights, and UCT search settings. The
@@ -187,6 +221,12 @@ python inference_cli.py single INPUT --output OUTPUT
 MonetGPT's model server, weights, Python environment, and optional GIMP runtime
 remain external dependencies. The adapter does not silently replace MonetGPT if
 it fails. A failed Anchor is recorded, and the shot is retried or rolled back.
+The official single-image command is not run frame by frame. All built-in
+backends now share `grade` and `grade_with_reference`; MonetGPT grades sparse
+Anchors, its editable parameters are blended toward the accepted Hero look, and
+the common parameter diffuser produces the dense video trajectory. Configure
+the blend with `hero_match_strength` in `[0, 1]` (default `0.35`). Both the
+pre-match parameters and matching method are retained in proposal metadata.
 
 ### JarvisArt and other agents
 

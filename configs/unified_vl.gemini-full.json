@@ -1,0 +1,91 @@
+{
+  "backend": {
+    "type": "unified_vl_video",
+    "provider": "openai_compatible",
+    "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "model": "gemini-3.5-flash-lite",
+    "api_key_env": "GEMINI_API_KEY",
+    "timeout_seconds": 180,
+    "max_retries": 8,
+    "retry_base_seconds": 2.0,
+    "retry_max_seconds": 60.0,
+    "json_mode": true,
+    "max_json_retries": 1,
+    "max_tokens": 8192,
+    "max_image_side": 1024,
+
+    "operations": {
+      "global_grade": true,
+      "tone_curve": true,
+      "hsl_grade": true,
+      "masked_grade": false,
+      "lut": false,
+      "denoise": false,
+      "deblur": false,
+      "generative_edit": false
+    },
+
+    "lut_catalog": {},
+
+    "operation_policy": {
+      "maximum_operations_per_shot": 3,
+      "maximum_additional_fidelity_l1": 0.12,
+      "maximum_added_clipping": 0.03,
+      "minimum_review_score": 0.6,
+      "maximum_planning_attempts": 2,
+      "strict": false
+    },
+
+    "storyboard": {
+      "allow_fallback": false,
+      "long_video": {
+        "overview_frames": 12,
+        "window_seconds": 30.0,
+        "overlap_seconds": 5.0,
+        "max_window_images": 16,
+        "boundary_context_frames": 3,
+        "boundary_batch_size": 4,
+        "anchor_candidates_per_shot": 6,
+        "anchor_shots_per_call": 3,
+        "max_anchor_images_per_call": 24,
+        "hero_max_images_per_call": 24,
+        "hero_nominees_per_batch": 4,
+        "hero_candidate_count": 5
+      }
+    },
+
+    "editor": {
+      "stages": ["lighting", "white_balance_and_color", "tone"],
+      "candidate_count": 12,
+      "seed": 7,
+      "use_mkl_prior": true,
+      "mkl_strength": 0.35,
+      "mkl_projection_iterations": 40
+    },
+
+    "review": {
+      "enabled": true,
+      "strict": true,
+      "focus": "instruction adherence, visible but controlled style, preservation, professional color, and cross-frame coherence",
+      "metric_weight": 0.55,
+      "visual_weight": 0.45,
+      "acceptance_score": 0.6
+    },
+
+    "safety": {
+      "maximum_fidelity_l1": 0.42,
+      "maximum_clipping": 0.2,
+      "maximum_temporal_error": 0.1,
+      "maximum_parameter_jerk": 0.2,
+      "maximum_anchor_error": 0.12
+    },
+
+    "search": {
+      "maximum_evaluations": 3,
+      "maximum_hero_attempts": 2,
+      "exploration_constant": 1.41421356237,
+      "rejection_penalty": 0.25,
+      "seed": 7
+    }
+  }
+}

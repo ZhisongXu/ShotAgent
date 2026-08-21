@@ -22,11 +22,20 @@ from .monet_adapter import (
     export_monet_resolve_package,
 )
 from .pipeline import DynamicGradePipeline
+from .operations import CubeLUT, OperationExecutor, canonicalize_operation_parameters
 from .search import AestheticMCTSSearch, SearchOutcome
 from .shot_planner import (
     HeuristicShotPlanner,
     LongVideoStoryboardSettings,
     VLShotPlanner,
+)
+from .unified_backend import (
+    EditOperation,
+    UnifiedVLVideoBackend,
+    UnifiedVideoEditResult,
+    VideoEditRequest,
+    build_unified_backend,
+    load_unified_backend,
 )
 
 __all__ = [
@@ -35,6 +44,9 @@ __all__ = [
     "CriticEnsemble",
     "CriticMember",
     "DynamicGradePipeline",
+    "CubeLUT",
+    "OperationExecutor",
+    "canonicalize_operation_parameters",
     "GradeGraph",
     "HeroAnchorRecord",
     "HeuristicShotPlanner",
@@ -50,6 +62,12 @@ __all__ = [
     "ShotPlan",
     "StoryboardPlan",
     "VLShotPlanner",
+    "EditOperation",
+    "UnifiedVLVideoBackend",
+    "UnifiedVideoEditResult",
+    "VideoEditRequest",
+    "build_unified_backend",
+    "load_unified_backend",
     "convert_monet_adjustments",
     "export_monet_resolve_package",
     "VLAnchorBackend",

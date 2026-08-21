@@ -1,0 +1,63 @@
+{
+  "backend": {
+    "type": "unified_vl_video",
+    "provider": "openai_compatible",
+    "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "model": "gemini-3.5-flash-lite",
+    "api_key_env": "GEMINI_API_KEY",
+    "timeout_seconds": 180,
+    "max_retries": 8,
+    "retry_base_seconds": 2.0,
+    "retry_max_seconds": 60.0,
+    "json_mode": true,
+    "max_json_retries": 1,
+    "max_tokens": 4096,
+    "max_image_side": 768,
+
+    "operations": {
+      "global_grade": true,
+      "tone_curve": false,
+      "hsl_grade": false,
+      "masked_grade": false,
+      "lut": false,
+      "denoise": false,
+      "deblur": false,
+      "generative_edit": false
+    },
+
+    "storyboard": {
+      "allow_fallback": false,
+      "long_video": {
+        "overview_frames": 6,
+        "window_seconds": 30.0,
+        "overlap_seconds": 5.0,
+        "max_window_images": 8,
+        "boundary_context_frames": 2,
+        "boundary_batch_size": 4,
+        "anchor_candidates_per_shot": 3,
+        "anchor_shots_per_call": 4,
+        "max_anchor_images_per_call": 16,
+        "hero_max_images_per_call": 16,
+        "hero_nominees_per_batch": 3,
+        "hero_candidate_count": 3
+      }
+    },
+
+    "editor": {
+      "stages": ["lighting"],
+      "candidate_count": 4,
+      "seed": 7,
+      "use_mkl_prior": false
+    },
+
+    "review": {
+      "enabled": false
+    },
+
+    "search": {
+      "maximum_evaluations": 1,
+      "maximum_hero_attempts": 1,
+      "seed": 7
+    }
+  }
+}

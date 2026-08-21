@@ -93,9 +93,14 @@ class HeuristicRetouchPlanner:
                 "auto grade",
                 "enhance photo",
                 "improve photo",
+                "natural look",
+                "natural grade",
+                "coherent look",
                 "修图",
                 "自动修图",
                 "自动调色",
+                "自然调色",
+                "自然风格",
                 "优化画面",
             )
         )
