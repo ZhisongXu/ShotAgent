@@ -182,6 +182,7 @@ class OpenAIResponsesVisionClientTest(unittest.TestCase):
                 api_key_env="RESPONSES_TEST_KEY",
                 reasoning_effort="high",
                 image_detail="high",
+                json_mode=True,
             )
 
             result = client.generate_json(
@@ -194,6 +195,9 @@ class OpenAIResponsesVisionClientTest(unittest.TestCase):
             request = _ResponsesHandler.request_payload
             self.assertEqual(request["model"], "gpt-5.6-sol")
             self.assertEqual(request["reasoning"], {"effort": "high"})
+            self.assertEqual(
+                request["text"], {"format": {"type": "json_object"}}
+            )
             content = request["input"][0]["content"]
             self.assertEqual(content[0]["type"], "input_text")
             image_item = next(

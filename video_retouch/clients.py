@@ -325,24 +325,32 @@ class OpenAIResponsesVisionClient(OpenAICompatibleVisionClient):
         }
         if self.reasoning_effort != "none":
             request_payload["reasoning"] = {"effort": self.reasoning_effort}
+        if self.json_mode:
+            request_payload["text"] = {"format": {"type": "json_object"}}
         body = json.dumps(request_payload).encode("utf-8")
-        request = urllib.request.Request(
-            f"{self.base_url}/responses",
-            data=body,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(
-                request, timeout=self.timeout_seconds
-            ) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as error:
-            detail = error.read().decode("utf-8", errors="replace")[-2000:]
-            raise RuntimeError(
-                f"Responses API returned HTTP {error.code}: {detail}"
-            ) from error
+        for attempt in range(self.max_retries + 1):
+            request = urllib.request.Request(
+                f"{self.base_url}/responses",
+                data=body,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(
+                    request, timeout=self.timeout_seconds
+                ) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                break
+            except urllib.error.HTTPError as error:
+                detail = error.read().decode("utf-8", errors="replace")[-2000:]
+                retryable = error.code == 429 or 500 <= error.code < 600
+                if retryable and attempt < self.max_retries:
+                    time.sleep(self._retry_delay(error, detail, attempt))
+                    continue
+                raise RuntimeError(
+                    f"Responses API returned HTTP {error.code}: {detail}"
+                ) from error
         return extract_json_object(self._response_text(payload))
