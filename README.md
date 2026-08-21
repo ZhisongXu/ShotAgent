@@ -147,9 +147,56 @@ Monet result) to `1` (Hero parameters), with `0.35` as the default. A rejected
 proposal is discarded by MCTS; if no Hero/shot trajectory passes, the video
 grade rolls back to identity.
 
-Copy `configs/unified_vl.example.json` to `configs/unified_vl.json`
-and export `OPENAI_API_KEY`. The supplied runtime uses OpenAI's native Responses
-API and one shared `gpt-5.6-sol` client for storyboard, editor, and review roles.
+### Model providers
+
+The unified backend supports both OpenAI's native Responses API and
+OpenAI-compatible multimodal endpoints. In either mode, one provider/model
+client is shared by storyboard perception, Hero/shot editing, and visual
+review; switching providers does not create a legacy editor/evaluator pool.
+
+For OpenAI, copy the primary configuration and export the key locally:
+
+```bash
+cp configs/unified_vl.example.json configs/unified_vl.json
+export OPENAI_API_KEY="..."
+```
+
+The configuration uses `provider: "openai_responses"`, `/v1/responses`, ordered
+`input_image` items, native JSON output mode, and automatic retry for 429/5xx
+responses. It defaults to one shared `gpt-5.6-sol` client; change `model` in the
+JSON when using another image-capable Responses model. See the official
+[OpenAI vision guide](https://developers.openai.com/api/docs/guides/images-vision/)
+and [Responses API reference](https://developers.openai.com/api/reference/resources/responses/methods/create).
+
+For Gemini's OpenAI-compatible endpoint, choose either the quota-conscious
+smoke-test configuration or the complete quality configuration:
+
+```bash
+cp configs/unified_vl.gemini-free.json configs/unified_vl.json
+# or: cp configs/unified_vl.gemini-full.json configs/unified_vl.json
+export GEMINI_API_KEY="..."
+```
+
+`gemini-free` keeps one editor stage, deterministic review, and one search
+evaluation to validate the full pipeline within a small request budget.
+`gemini-full` enables the three editor stages, MKL matching, visual review,
+tone-curve/HSL planning, and multi-round search. On multi-shot long videos the
+full configuration can exceed a free provider's per-minute or daily request
+quota; transport retries cannot bypass a daily quota.
+
+Run either provider with the same CLI contract:
+
+```bash
+python retouch_video.py \
+  --input input.mp4 \
+  --instruction "visible but controlled warm cinematic grade" \
+  --backend-config configs/unified_vl.json \
+  --output outputs/input.grade.json
+```
+
+The supplied runtime uses one shared client for storyboard, editor, and review
+roles.
+
 The storyboard path performs a sparse whole-video overview, a full-frame
 physical scan, overlapping 20-second VL windows, dense boundary adjudication,
 task-aware Anchor ranking inside every verified shot, then selects a global
