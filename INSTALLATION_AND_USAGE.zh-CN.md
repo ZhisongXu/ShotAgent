@@ -43,6 +43,12 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
+如需读取工作室 OpenColorIO/ACES 配置，再安装可选依赖：
+
+```bash
+python -m pip install -r requirements-color.txt
+```
+
 Windows PowerShell：
 
 ```powershell
@@ -158,22 +164,66 @@ python retouch_video.py \
 ```
 
 新配置只创建一个 `UnifiedVLVideoBackend` 和一个共享 VL client；分镜、Hero/Anchor
-参数规划和视觉复核都由这个 client 分阶段完成，确定性执行器和安全指标属于后端内部
-算子。输出 JSON 会包含 `operation_graph` 和脱敏的 `backend_runtime`。
+Pool 规划和视觉复核都由这个 client 分阶段完成，确定性执行器和安全指标属于后端内部
+算子。输出 JSON 使用 `pool-grade-graph/v2`，不再依赖或暴露旧的 12 维参数。
 
-operation graph v1 已真实支持 `global_grade`、单调 `tone_curve`、选择性
-`hsl_grade` 和登记过的 3D `.cube` LUT。附加操作按镜头规划，在镜头首帧、Anchor、
-尾帧上执行预览，再经过确定性安全检查和同一 VL client 复核；任一检查失败会整组回滚。
-LUT 只能通过 `lut_catalog` 中的 ID 选择相对配置文件目录的文件，VL 不能提供任意路径。
-`masked_grade`、`denoise` 和 `generative_edit` 仍必须为 `false`。
-启用 curve/HSL/LUT 后，每个已接受镜头会增加一次操作规划调用；如果提案通过确定性
-检查，还会增加一次视觉复核调用。把三者设为 `false` 即恢复只做全局调色的调用成本。
-使用 LUT 时，把文件放在配置文件同级或子目录，并登记 ID，例如
-`"lut_catalog": {"film-soft": "luts/film-soft.cube"}`。
+Pool v2 已实现 Primary、白平衡、全局色彩、HSL 八色、阴影/中间调/高光三色轮、
+RGB/R/G/B 曲线、clarity/texture/dehaze/sharpening、暗角/颗粒/bloom/halation/
+diffusion/色差，以及亮度和色彩降噪。Agent 按 technical、look、selective_color、
+texture、optical 五阶段稀疏调用，所有 JSON 先经过范围和结构校验，再由本地执行器预览、
+安全检查和同一 VL client 复核；失败时按镜头记录原因，并按事务策略整体回滚。
 
-目前 Resolve/DCTL 只编码全局 12 维参数。如果本次运行接受了 curve、HSL 或 LUT，且同时
-请求 `--resolve-package-dir`，CLI 会明确报错，避免导出与预览成片不一致的包。旧的
-`--agent-config` 入口仍保留给多 editor/Monet 实验。
+Primary、白平衡和降噪允许生成逐帧轨迹，其余创意 Pool 默认在 Shot 内固定；颗粒参数
+固定，但噪声由绝对帧号和固定种子确定，因此不会冻结，也可重复渲染。Pool v2 的空间
+效果不能完整编码成全局 LUT/DCTL，请用 `--video-output-dir` 输出完整成片。旧的
+`--agent-config` 和 Resolve 12 维导出仅作为兼容实验路径保留。
+
+完整渲染默认把一批 `BCHW` 帧、逐帧 Pool 参数和蒙版同时送入 Torch；有 CUDA 时在
+GPU 上执行，无 CUDA 时自动用相同 Torch 算子回退到 CPU。Agent 的每个 Pool 节点可写
+`"mask": "global" | "person" | "skin" | "sky"`。人物蒙版由本地 HOG/肤色种子生成，
+肤色与天空由颜色和空间先验生成，视频中用光流传播并周期重检；mask 为软权重，因此边缘
+会羽化，而不是硬切。
+
+### 4.1 10/12-bit、Log、HDR 与 ACES
+
+例如把 S-Log3 输入放进 ACEScg 工作空间并输出 10-bit Rec.2020 PQ：
+
+```bash
+python retouch_video.py \
+  --input camera-log.mov \
+  --instruction "电影感对比，保护人物肤色与天空" \
+  --backend-config configs/unified_vl.json \
+  --output outputs/camera-log.grade.json \
+  --video-output-dir outputs/camera-log-videos \
+  --input-color-space slog3 \
+  --working-color-space acescg \
+  --output-color-space rec2020_pq \
+  --output-bit-depth 10 \
+  --pq-reference-white-nits 203 \
+  --render-device cuda
+```
+
+可用输入/输出包括 `srgb`、`rec709`、`logc3`、`slog3`、`vlog`、`rec2020_pq`、
+`rec2020_hlg`、线性 Rec.709/Rec.2020、`acescg` 和 `aces2065-1`。分析阶段只把
+色彩管理后的 tone-mapped sRGB 代理交给 VL；成片会重新由 FFmpeg 解码成 16-bit RGB，
+在 float32 中完成调色，再编码成 10-bit `yuv420p10le` 或 12-bit `yuv444p12le` HEVC，
+并复制原视频音频。HDR 调整从显示代理回写为场景线性亮度比例和色度差，因此不会把原始
+HDR 高光先截成 8-bit 再处理。
+
+使用工作室 OCIO 配置时：
+
+```bash
+python retouch_video.py ... \
+  --ocio-config /show/config.ocio \
+  --ocio-input-space "ARRI LogC3 (EI800) - Wide Gamut" \
+  --ocio-working-space ACEScg \
+  --ocio-display-space "sRGB - Display" \
+  --ocio-output-space "Output - Rec.2020 PQ" \
+  --output-bit-depth 10
+```
+
+四个 OCIO space 名称必须与该 `config.ocio` 完全一致。内置色彩管理不依赖 OCIO；OCIO
+仅在需要项目自定义 IDT/ODT、Look 或命名空间时安装。
 
 示例配置默认使用 OpenAI Responses API 和 `gpt-5.6-sol`。如使用其他兼容服务，
 修改 `provider`、`base_url`、`model` 和 `api_key_env`；兼容 Chat Completions 的服务
@@ -335,6 +385,9 @@ python -c "import DaVinciResolveScript; print('Resolve API import OK')"
 
 ### 7.2 导出逐帧变化包
 
+这一节只适用于旧的 `legacy-12d/v1` 兼容运行时。Pool v2 包含空间与频率效果，必须通过
+`--video-output-dir` 完整渲染，CLI 会拒绝生成视觉上不完整的 Resolve 包。
+
 在视频命令中加入：
 
 ```bash
@@ -397,8 +450,8 @@ python outputs/input_resolve/apply_dynamic_grade.py \
 
 ## 10. 当前边界
 
-- Resolve 输出面向 display-referred RGB `[0,1]`，推荐时间线为 Rec.709 Gamma 2.4；若使用
-  Log、ACES 或其他色彩管理，应在正确的输入/输出变换之间放置节点并自行校准。
+- 完整视频渲染已经支持 Log/HDR、ACEScg 和 OCIO；Resolve 兼容导出仍是旧 12-D 的
+  display-referred Rec.709 DCTL/LUT，不等同于完整 Pool v2 渲染。
 - 全局 3D LUT/DCTL 不能携带局部蒙版参数，导出会拒绝非零局部参数。
 - `--resolve-keyframe-error` 控制的是共享参数空间的最大压缩误差，不是 Delta E。
 - Resolve 公共脚本 API 不负责创建任意 Color 页参数关键帧；因此本项目用时间感知 DCTL

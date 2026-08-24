@@ -10,8 +10,8 @@ Video Perceiver: full-video scan + hierarchical VL shot/Anchor planning
   → rank per-shot Anchors into a global HeroAnchor shortlist
   → develop and approve one HeroAnchor as the master look
   → match every other shot Anchor to the accepted Hero visual reference
-  → one VL editor producing editable global-grade operations
-  → deterministic RetouchExecutor + Bayesian temporal parameter field
+  → one VL editor producing sparse typed Grade Pool operations
+  → deterministic Pool executor + type-aware Bayesian temporal fields
   → the same VL client reviews previews + deterministic temporal safety veto
   → Anchor replacement, Hero reselection, and transactional rollback
 ```
@@ -23,16 +23,23 @@ multi-agent manifest remains available as a compatibility path.
 
 ## What is implemented
 
-- 12-parameter global/local photometric executor;
-- mask-local exposure, temperature, and saturation;
+- Pool graph v2 with Primary, white balance, global color, HSL8, three-way
+  color wheels, four-channel curves, texture, optical effects, and denoise;
+- fixed operation order, strict model-output validation, and deterministic
+  per-frame grain;
+- Torch `BCHW` Pool rendering on CUDA with a complete Torch CPU fallback;
+- 16-bit RGB FFmpeg decode and HEVC 10/12-bit Rec.709, PQ, or HLG delivery;
+- built-in sRGB/Rec.709/LogC3/S-Log3/V-Log/PQ/HLG transforms through ACEScg,
+  plus optional studio OpenColorIO configs;
+- person, skin, and sky Pool masks with optical-flow tracking and periodic
+  semantic refresh;
 - hierarchical long-video VL planner with overlapping windows, boundary
   adjudication, and per-shot Anchor ranking;
 - tournament-style HeroAnchor selection across all shot Anchors;
 - visual shot matching against the accepted graded HeroAnchor;
 - training-free heuristic planner retained only as an explicit ablation/fallback;
 - provider-neutral single-backend configuration with one shared VL client;
-- versioned operation graph with global grade, tone curves, selective HSL, and
-  cataloged 3D LUTs;
+- versioned sparse operation graph with per-Pool temporal policies;
 - legacy multi-editor UCT-MCTS selection and reward back-propagation;
 - legacy competing editing-Agent proposals and independent critic ensemble;
 - per-shot action memory, trajectory export, and transactional rollback;
@@ -51,21 +58,20 @@ and DaVinci Resolve application steps, see the Chinese
 ## Video to grading parameters
 
 The primary video entry point accepts a video plus a text instruction and emits
-an editable grade graph. The product output is JSON containing shot boundaries,
-Anchor parameter keyframes, the shot base grade, a dense 12-D parameter
-trajectory, confidence, and rollback history. A normalized source video and the
-final parameter-rendered result can also be exported for visual inspection.
+an editable Pool graph. The JSON contains shot boundaries, Hero/Anchor audits,
+typed operation nodes, dense tracks only for controls that are allowed to vary
+over time, confidence, and rollback history. The old 12-D trajectory is not
+used or exposed by `pool-graph/v2`.
 
 ```bash
 python retouch_video.py \
   --input input.mp4 \
   --reference-video reference.mp4 \
   --instruction "natural warm cinematic grade with protected skin tones" \
-  --backend-config configs/unified_vl.json \
+  --backend-config configs/unified_vl.gemini-full.json \
   --output outputs/input.grade.json \
   --trajectory-output outputs/input.rollouts.jsonl \
   --video-output-dir outputs/input_videos \
-  --resolve-package-dir outputs/input_resolve \
   --analysis-max-side 960 \
   --render-max-side 1920
 ```
@@ -73,21 +79,42 @@ python retouch_video.py \
 `--reference-video` is optional. When supplied, the storyboard Agent selects
 the HeroShot from that video, the editor develops its grade, and all target
 video Anchors match the pair of reference source frame and accepted graded
-reference frame. Only the target video receives the resulting dense trajectory
-and rendered output. The grade JSON identifies the Hero with
-`"source_video": "reference_video"` and records reference-video metadata.
+reference frame. Only the target video receives the resulting Pool tracks and
+rendered output. `pool_metadata.hero.source_video` records the reference source.
 
 The video directory contains `<input>.source.mp4` and `<input>.graded.mp4`.
 The Agent can reason over a lightweight proxy while the accepted dense
-trajectory is rendered from a separate high-resolution decode. MP4 delivery
-uses high-quality H.264; artifacts are currently silent because audio muxing is
-outside the grading benchmark contract.
+trajectory is rendered from a separate high-resolution decode. The default is
+high-quality 8-bit H.264. A 10/12-bit render uses HEVC and copies source audio
+when present.
 
-The optional Resolve package contains a static 33³ `.cube` LUT and a time-aware
-`.dctl` for every shot, plus a frame-accurate conform manifest and
-`apply_dynamic_grade.py`. Anchor frames and trajectory turns are retained while
-redundant dense samples are compressed; tune the maximum per-parameter error
-with `--resolve-keyframe-error` (default `0.015`).
+For example, grade S-Log3 in ACEScg and deliver 10-bit HDR PQ:
+
+```bash
+python retouch_video.py \
+  --input camera-log.mov \
+  --instruction "natural cinematic contrast; protect skin and sky" \
+  --backend-config configs/unified_vl.json \
+  --output outputs/camera-log.grade.json \
+  --video-output-dir outputs/camera-log-videos \
+  --input-color-space slog3 \
+  --working-color-space acescg \
+  --output-color-space rec2020_pq \
+  --output-bit-depth 10 \
+  --render-device cuda
+```
+
+Analysis uses a tone-mapped sRGB proxy, but delivery is decoded as `rgb48le`,
+graded in float32 batches, and encoded without an 8-bit intermediate. For a
+studio OCIO config, install `requirements-color.txt` and additionally pass
+`--ocio-config` plus the four explicit `--ocio-*-space` names. Masked Pool nodes
+use `"mask": "person"`, `"skin"`, or `"sky"`; omitted masks are global.
+
+The Resolve DCTL exporter remains available for the legacy 12-D compatibility
+runtime. Pool v2 effects such as denoise, clarity, bloom, vignette, chromatic
+aberration, and grain are spatial operators and cannot be represented faithfully
+by a global LUT/DCTL package; use `--video-output-dir` for a complete Pool v2
+render.
 
 Resolve's public API can apply LUTs and keyframed DRX grades but cannot create
 arbitrary Color-page parameter keyframes. The generated Resolve 19.1+ DCTL uses
@@ -204,24 +231,14 @@ HeroAnchor. The editor first develops and approves the Hero look; all remaining
 Anchors receive both the Hero source and accepted Hero grade as their visual
 matching reference. Add
 `--allow-storyboard-fallback` only for physical shot-detection ablations.
-The output includes `operation_graph` and a sanitized `backend_runtime`
-manifest. Operation-graph v1 executes `global_grade`, monotonic `tone_curve`,
-selective `hsl_grade`, and cataloged 3D `.cube` LUT operations. Additional
-operations are proposed per shot, previewed at the shot start/Anchor/end,
-reviewed by deterministic safety gates and the shared VL client, and committed
-or rolled back as one stack. LUT IDs resolve only to relative files explicitly
-listed under `lut_catalog`; the model cannot provide arbitrary paths.
-`masked_grade` and `generative_edit` still fail configuration validation.
-With tone/HSL/LUT enabled, each accepted shot adds one operation-planning call
-and, when a non-empty stack passes deterministic checks, one review call. Set
-all three flags to `false` to retain the global-grade-only cost profile. To use
-a LUT, place it beside or below the backend config and register it, for example
-`"lut_catalog": {"film-soft": "luts/film-soft.cube"}`.
-
-Resolve export currently represents only the global parameter trajectory. If a
-run accepts curve, HSL, or LUT post-operations while `--resolve-package-dir` is
-requested, the CLI stops with an explicit unsupported-operation error rather
-than exporting a visually incomplete package.
+The output includes `operation_graph/v2` and a sanitized `backend_runtime`
+manifest. The VL colorist runs technical, look, selective-color, texture, and
+optical stages. Each response is sparse, validated against its Pool contract,
+rendered locally, reviewed, and committed transactionally. Primary, white
+balance, and denoise controls receive frame tracks from grading Anchors;
+HSL8, wheels, curves, global color, texture, and optical effects are normally
+shot-static. Grain parameters are static but the seeded grain realization
+changes deterministically with the absolute frame number.
 
 The older `--agent-config configs/photoagent_multi.json` path is retained for
 experiments that explicitly require MonetGPT, command tools, or competing

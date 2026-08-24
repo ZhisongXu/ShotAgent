@@ -1,4 +1,4 @@
-# DynamicGrade video-to-parameter pipeline
+# DynamicGrade Pool video pipeline
 
 ## Contract
 
@@ -12,18 +12,19 @@ target video file + natural-language grading instruction
 Output:
 
 ```text
-dynamic-grade-graph/v1 JSON
+pool-grade-graph/v2 JSON + optional rendered video
 ```
 
-The output is a grading parameter graph, not a rendered video. Its dense form is
-`frame_parameters[T, 12]`; its editable sparse form contains one base grade and
-Anchor parameter keyframes per shot. Exposure is measured in stops. The other
-dimensions use the normalized ranges recorded in `parameter_schema`.
+The main output is a sparse typed operation graph. Primary, white-balance, and
+denoise nodes may contain dense frame tracks; creative and spatial nodes remain
+shot-static. The legacy `frame_parameters[T,12]` object is not used by v2.
 
 ## Pipeline
 
 ```text
-video decode
+16-bit RGB video decode + input transfer/gamut transform
+  -> ACEScg (or explicit OCIO working space)
+  -> tone-mapped sRGB analysis proxy for VL only
   -> full-frame physical discontinuity scan
   -> GPT-5.6 Sol sparse global overview
   -> overlapping VL windows propose hard/soft/semantic boundaries
@@ -31,28 +32,44 @@ video decode
   -> per-shot diverse candidate generation + VL Anchor ranking
   -> tournament ranking selects a global HeroAnchor shortlist
        -> when a reference video is supplied, rank and develop HeroShots there
-  -> editor/critic look development approves the HeroAnchor grade
-  -> every other shot Anchor is matched to Hero source + accepted Hero grade
-  -> Lab-space MKL proposes a conservative distribution match
-       -> MLLM names semantic correspondences and protected memory colors
-       -> accept / attenuate / reject the distribution prior
-       -> project the accepted proposal back into the editable 12-D parameters
-  -> UCT-MCTS selects and expands editing trajectories
-  -> editor pool: independent vision models / MonetGPT / external tools
-  -> recover the shared 12-D parameters from RGB-only editors
-  -> shot-local Bayesian parameter diffusion using time-varying palette traces
-  -> source-guided tonal stabilization in parameter space, with hard Anchors
-  -> temporary preview rendering
-  -> evaluator ensemble: visual specialists + deterministic temporal safety
-  -> back-propagate reward into the search tree
-       -> commit the highest-scoring safe trajectory
-       -> or roll back that round, replace the Anchor, and search again
-       -> or retry the whole matching pass with the next HeroAnchor
-       -> or roll the complete shot/video attempt back to identity parameters
-  -> grade graph JSON
+  -> five restricted VL colorist stages develop and approve the Hero look
+       -> technical: denoise, white balance, Primary
+       -> look: color wheels, four-channel curves, global color
+       -> selective_color: HSL8
+       -> texture: clarity, texture, dehaze, sharpening
+       -> optical: vignette, grain, bloom, halation, diffusion, aberration
+  -> every target Anchor sees Hero source + accepted Hero grade
+  -> strict Pool canonicalization rejects unknown fields and invalid ranges
+  -> deterministic preview rendering in a fixed operation order
+       -> optional person / skin / sky mask per Pool node
+       -> semantic refresh + optical-flow mask tracking
+  -> Bayesian diffusion for Primary, white balance, and denoise tracks
+  -> shot-static consensus for creative/spatial Pools
+  -> source-guided exposure-flicker compensation with hard Anchors
+  -> start/Anchor/end deterministic and VL review
+       -> commit the complete typed stack
+       -> or add/replace an Anchor and review again
+       -> or retry Hero development
+       -> or transactionally roll the complete video back
+  -> float32 Torch BCHW Pool batches on CUDA (Torch/NumPy CPU fallback)
+  -> output transform + 8/10/12-bit SDR/PQ/HLG encode
+  -> Pool graph JSON and optional full render
 ```
 
-The propagated object is always the parameter trajectory, never Anchor RGB.
+The propagated objects are typed numeric controls, never generated Anchor RGB.
+
+The analysis image is intentionally not the delivery image. Log/HDR sources are
+decoded to 16-bit RGB, transformed to a scene-linear working space, and only
+then tone-mapped for VL inspection. The accepted display-proxy grade is
+transferred back to scene-linear luminance/chroma before the output transform,
+so the high-bit path has no 8-bit pixel intermediate. Built-in transforms cover
+sRGB, Rec.709, LogC3, S-Log3, V-Log, PQ, HLG, Rec.2020, ACEScg, and ACES2065-1;
+an optional OCIO config can replace all named transforms.
+
+## Legacy 12-D research path
+
+The sections below describe the retained `legacy-12d/v1` research and
+compatibility path. It is not used by the main Pool configurations.
 
 ## Hybrid color-science layer
 
@@ -160,22 +177,19 @@ client performs storyboard perception, editable parameter planning, and visual
 review; deterministic rendering, safety metrics, diffusion, and rollback are
 internal operators rather than public backends.
 
-Run it with `--backend-config`. The result contains a sanitized
-`backend_runtime` manifest and a versioned `operation_graph`. Version 1 executes
-accepted per-shot `global_grade` keyframes, monotonic RGB/channel tone curves,
-selective HSL adjustments, and cataloged 3D `.cube` LUTs. Post-grade operations
-are constant inside one shot, previewed on its start/Anchor/end samples, and
-committed or rolled back as one stack after deterministic and VL review.
-Catalog paths are relative to and confined within the backend-config directory.
-Mask, restoration, and generative operations remain rejected until their
-temporal contracts exist.
+Run it with `--backend-config`. The main configurations select
+`pool-graph/v2`. The result contains a sanitized runtime manifest and typed
+operations for Primary, white balance, global color, HSL8, three-way wheels,
+four-channel curves, texture, optical effects, and denoise. The shared VL
+colorist plans five restricted stages; deterministic rendering and VL review
+close the loop before transactional commit.
 
-The current Resolve exporter encodes only `global_grade`. It refuses a package
-when an accepted post-grade operation would otherwise be omitted.
-
-The unified backend owns `DynamicGradePipeline` internally. Its trajectory
-search has exactly one editor and therefore searches Anchor replacement and
-rollback trajectories, not competing editor identities.
+Primary, white balance, and denoise have Anchor-conditioned frame tracks.
+Global color, HSL8, wheels, curves, texture, and optical effects use shot-static
+policies. Grain is shot-static in control space but seeded by absolute frame.
+The old `DynamicGradePipeline` and 12-D Resolve exporter remain only as the
+legacy compatibility runtime; Pool v2 full renders are delivered as video
+because its spatial/frequency effects cannot be represented by a global LUT.
 
 ## Legacy multi-model runtime
 

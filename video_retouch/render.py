@@ -11,7 +11,10 @@ from PIL import Image
 
 from retouch_agent import RetouchExecutor
 
+from .gpu_pool_executor import TorchGradePoolExecutor
+from .grade_pools import POOL_OPERATION_TYPES
 from .operations import OperationExecutor
+from .semantic_masks import SemanticMaskTracker
 
 
 def render_grade_frames(
@@ -23,6 +26,8 @@ def render_grade_frames(
     operation_executor: Optional[OperationExecutor] = None,
     batch_size: int = 8,
     device: Optional[str] = None,
+    mask_tracker: Optional[SemanticMaskTracker] = None,
+    use_torch_pools: bool = True,
 ) -> Iterator[Image.Image]:
     """Render a dense trajectory in GPU/CPU batches without buffering output."""
 
@@ -40,9 +45,50 @@ def render_grade_frames(
     selected_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     retoucher = executor or RetouchExecutor()
     post_executor = operation_executor or OperationExecutor()
+    pool_executor = TorchGradePoolExecutor()
+    pool_operations = tuple(
+        operation
+        for operation in operations
+        if str(getattr(operation, "operation_type")) in POOL_OPERATION_TYPES
+    )
+    legacy_operations = tuple(
+        operation
+        for operation in operations
+        if str(getattr(operation, "operation_type")) not in POOL_OPERATION_TYPES
+    )
+    pre_operations = (
+        legacy_operations
+        if use_torch_pools
+        else legacy_operations + pool_operations
+    )
+    mask_ids = sorted(
+        {
+            str(getattr(operation, "mask_id", "global"))
+            for operation in operations
+            if str(getattr(operation, "mask_id", "global")) != "global"
+        }
+    )
+    mask_tracks = (
+        (mask_tracker or SemanticMaskTracker()).track_many(frames, mask_ids)
+        if mask_ids
+        else {}
+    )
     with torch.inference_mode():
         for start in range(0, len(frames), batch_size):
             batch_frames = frames[start : start + batch_size]
+            if pre_operations:
+                batch_frames = tuple(
+                    post_executor.apply_pre_grade(
+                        frame,
+                        pre_operations,
+                        frame_index=start + offset,
+                        masks={
+                            mask_id: mask_tracks[mask_id][start + offset]
+                            for mask_id in mask_ids
+                        },
+                    )
+                    for offset, frame in enumerate(batch_frames)
+                )
             arrays = (
                 np.stack(
                     [
@@ -61,15 +107,42 @@ def render_grade_frames(
                 selected_device, non_blocking=True
             )
             rendered = retoucher.apply_vector(images, values)
+            if pool_operations and use_torch_pools:
+                batch_masks = {
+                    mask_id: torch.from_numpy(
+                        np.stack(mask_tracks[mask_id][start : start + len(batch_frames)])
+                    ).to(selected_device, non_blocking=True)
+                    for mask_id in mask_ids
+                }
+                rendered = pool_executor.apply_batch(
+                    rendered,
+                    pool_operations,
+                    frame_indices=range(start, start + len(batch_frames)),
+                    masks=batch_masks,
+                )
             output = (
                 rendered.permute(0, 2, 3, 1).detach().cpu().numpy() * 255.0 + 0.5
             ).astype(np.uint8)
             for offset, array in enumerate(output):
                 image = Image.fromarray(array, mode="RGB")
-                if operations:
-                    image = post_executor.apply(
+                if pool_operations and not use_torch_pools:
+                    image = post_executor.apply_post_grade(
                         image,
-                        operations,
+                        pool_operations,
                         frame_index=start + offset,
+                        masks={
+                            mask_id: mask_tracks[mask_id][start + offset]
+                            for mask_id in mask_ids
+                        },
+                    )
+                if legacy_operations:
+                    image = post_executor.apply_post_grade(
+                        image,
+                        legacy_operations,
+                        frame_index=start + offset,
+                        masks={
+                            mask_id: mask_tracks[mask_id][start + offset]
+                            for mask_id in mask_ids
+                        },
                     )
                 yield image

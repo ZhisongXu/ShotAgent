@@ -1,6 +1,7 @@
 {
   "backend": {
     "type": "unified_vl_video",
+    "grade_schema": "pool-graph/v2",
     "provider": "openai_compatible",
     "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
     "model": "gemini-3.5-flash-lite",
@@ -15,20 +16,21 @@
     "max_image_side": 1024,
 
     "operations": {
-      "global_grade": true,
-      "tone_curve": true,
-      "hsl_grade": true,
-      "masked_grade": false,
-      "lut": false,
-      "denoise": false,
-      "deblur": false,
-      "generative_edit": false
+      "primary": true,
+      "white_balance": true,
+      "global_color": true,
+      "hsl8": true,
+      "color_wheels": true,
+      "curves": true,
+      "texture": true,
+      "optical_effects": true,
+      "denoise": true
     },
 
     "lut_catalog": {},
 
     "operation_policy": {
-      "maximum_operations_per_shot": 3,
+      "maximum_operations_per_shot": 9,
       "maximum_additional_fidelity_l1": 0.12,
       "maximum_added_clipping": 0.03,
       "minimum_review_score": 0.6,
@@ -55,12 +57,10 @@
     },
 
     "editor": {
-      "stages": ["lighting", "white_balance_and_color", "tone"],
+      "stages": ["technical", "look", "selective_color", "texture", "optical"],
       "candidate_count": 12,
       "seed": 7,
-      "use_mkl_prior": true,
-      "mkl_strength": 0.35,
-      "mkl_projection_iterations": 40
+      "transactional": true
     },
 
     "review": {

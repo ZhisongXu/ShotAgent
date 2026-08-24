@@ -6,16 +6,70 @@ import argparse
 import json
 from pathlib import Path
 
+import numpy as np
+import torch
+from PIL import Image
+
 from video_retouch import (
     DynamicGradePipeline,
     HeuristicShotPlanner,
     VLShotPlanner,
 )
 from video_retouch.agent_config import load_multi_agent_runtime
-from video_retouch.io import decode_video, encode_video
+from video_retouch.color_management import COLOR_SPACES, ColorManager, OCIOColorManager
+from video_retouch.color_managed_render import render_color_managed_frames
+from video_retouch.high_bit_io import (
+    decode_video_rgb16,
+    encode_video_high_bit,
+    has_audio_stream,
+)
+from video_retouch.io import DecodedVideo, decode_video, encode_video
 from video_retouch.render import render_grade_frames
 from video_retouch.resolve_export import export_resolve_package
+from video_retouch.semantic_masks import SemanticMaskTracker
 from video_retouch.unified_backend import VideoEditRequest, load_unified_backend
+
+
+def _analysis_decode(
+    path: Path,
+    *,
+    color_space: str,
+    max_frames: int | None,
+    max_side: int | None,
+    working_space: str,
+    ocio_manager: OCIOColorManager | None,
+    ocio_spaces: dict[str, str],
+    pq_reference_white_nits: float,
+) -> DecodedVideo:
+    if color_space == "srgb" and ocio_manager is None:
+        return decode_video(path, max_frames=max_frames, max_side=max_side)
+    info, arrays = decode_video_rgb16(path, max_frames=max_frames, max_side=max_side)
+    if ocio_manager is None:
+        manager = ColorManager(working_space)
+        proxies = []
+        for frame in arrays:
+            working = manager.to_working(frame, color_space)
+            if color_space == "rec2020_pq":
+                working = working * (10_000.0 / pq_reference_white_nits)
+            proxies.append(manager.display_proxy(working))
+    else:
+        proxies = [
+            np.clip(
+                ocio_manager.convert(
+                    ocio_manager.convert(frame, ocio_spaces["input"], ocio_spaces["working"]),
+                    ocio_spaces["working"],
+                    ocio_spaces["display"],
+                ),
+                0,
+                1,
+            )
+            for frame in arrays
+        ]
+    frames = tuple(
+        Image.fromarray((proxy * 255 + 0.5).astype(np.uint8), mode="RGB")
+        for proxy in proxies
+    )
+    return DecodedVideo(frames, info.fps, info.width, info.height, info.source)
 
 
 def main() -> None:
@@ -115,11 +169,74 @@ def main() -> None:
         help="Number of full-resolution frames rendered together.",
     )
     parser.add_argument(
+        "--render-device",
+        help="Torch device for batch Pool rendering, for example cuda, cuda:1, or cpu.",
+    )
+    parser.add_argument(
+        "--disable-torch-pools",
+        action="store_true",
+        help="Use the NumPy/OpenCV Pool fallback for 8-bit output.",
+    )
+    parser.add_argument(
+        "--mask-detection-interval",
+        type=int,
+        default=6,
+        help="Refresh person detection every N frames between optical-flow tracks.",
+    )
+    parser.add_argument(
+        "--input-color-space",
+        choices=sorted(COLOR_SPACES),
+        default="srgb",
+        help="Transfer/gamut carried by the input video.",
+    )
+    parser.add_argument(
+        "--reference-color-space",
+        choices=sorted(COLOR_SPACES),
+        help="Reference-video color space; defaults to --input-color-space.",
+    )
+    parser.add_argument(
+        "--working-color-space",
+        choices=("acescg", "aces2065-1", "linear_rec709", "linear_rec2020"),
+        default="acescg",
+    )
+    parser.add_argument(
+        "--output-color-space",
+        choices=sorted(COLOR_SPACES),
+        default="rec709",
+    )
+    parser.add_argument("--output-bit-depth", type=int, choices=(8, 10, 12), default=8)
+    parser.add_argument(
+        "--pq-reference-white-nits",
+        type=float,
+        default=203.0,
+        help="Scene-linear value 1.0 luminance when writing Rec.2020 PQ.",
+    )
+    parser.add_argument("--ocio-config", type=Path, help="Optional OpenColorIO config.ocio.")
+    parser.add_argument("--ocio-input-space")
+    parser.add_argument("--ocio-working-space")
+    parser.add_argument("--ocio-display-space")
+    parser.add_argument("--ocio-output-space")
+    parser.add_argument(
         "--compact",
         action="store_true",
         help="Omit the dense per-frame parameter trajectory.",
     )
     args = parser.parse_args()
+
+    ocio_names = {
+        "input": args.ocio_input_space,
+        "working": args.ocio_working_space,
+        "display": args.ocio_display_space,
+        "output": args.ocio_output_space,
+    }
+    if args.ocio_config is not None and not all(ocio_names.values()):
+        parser.error(
+            "--ocio-config requires --ocio-input-space, --ocio-working-space, "
+            "--ocio-display-space, and --ocio-output-space."
+        )
+    ocio_manager = (
+        OCIOColorManager(args.ocio_config) if args.ocio_config is not None else None
+    )
 
     analysis_max_side = (
         args.analysis_max_side if args.analysis_max_side is not None else args.max_side
@@ -127,16 +244,26 @@ def main() -> None:
     render_max_side = (
         args.render_max_side if args.render_max_side is not None else args.max_side
     )
-    decoded = decode_video(
+    decoded = _analysis_decode(
         args.input,
+        color_space=args.input_color_space,
         max_frames=args.max_frames,
         max_side=analysis_max_side,
+        working_space=args.working_color_space,
+        ocio_manager=ocio_manager,
+        ocio_spaces=ocio_names,
+        pq_reference_white_nits=args.pq_reference_white_nits,
     )
     reference_decoded = (
-        decode_video(
+        _analysis_decode(
             args.reference_video,
+            color_space=args.reference_color_space or args.input_color_space,
             max_frames=args.max_frames,
             max_side=analysis_max_side,
+            working_space=args.working_color_space,
+            ocio_manager=ocio_manager,
+            ocio_spaces=ocio_names,
+            pq_reference_white_nits=args.pq_reference_white_nits,
         )
         if args.reference_video is not None
         else None
@@ -264,6 +391,10 @@ def main() -> None:
         "height": decoded.height,
         "fps": decoded.fps,
         "frame_count": len(decoded.frames),
+        "input_color_space": args.input_color_space,
+        "working_color_space": (
+            ocio_names["working"] if ocio_manager is not None else args.working_color_space
+        ),
     }
     if reference_decoded is not None:
         payload["reference_video"] = {
@@ -284,6 +415,16 @@ def main() -> None:
         ]
     )
     if args.resolve_package_dir is not None and unsupported_resolve_operations:
+        if (
+            unified_result is not None
+            and unified_result.pool_metadata.get("schema_version")
+            == "pool-grade-graph/v2"
+        ):
+            raise ValueError(
+                "Resolve export cannot faithfully encode pool-graph/v2 spatial, "
+                "frequency, and temporal operations. Use --video-output-dir for "
+                "the complete render, or use the legacy runtime for 12-D DCTL export."
+            )
         raise ValueError(
             "Resolve export cannot yet encode unified post-grade operations: "
             + ", ".join(sorted(set(unsupported_resolve_operations)))
@@ -297,41 +438,151 @@ def main() -> None:
             result_video_output.resolve(),
         }:
             raise ValueError("Video artifact path would overwrite the source video.")
-        render_video = (
-            decoded
-            if render_max_side == analysis_max_side
-            else decode_video(
+        operations = () if unified_result is None else unified_result.operations
+        color_managed = (
+            args.output_bit_depth > 8
+            or args.input_color_space != "srgb"
+            or args.output_color_space not in {"srgb", "rec709"}
+            or ocio_manager is not None
+        )
+        if color_managed and args.disable_torch_pools:
+            raise ValueError(
+                "--disable-torch-pools is only available for the 8-bit sRGB/Rec.709 path."
+            )
+        pool_render_device = args.render_device or (
+            "cuda" if torch.cuda.is_available() else "cpu"
+        )
+        mask_tracker = SemanticMaskTracker(
+            detection_interval=args.mask_detection_interval
+        )
+        if color_managed:
+            render_info, render_arrays = decode_video_rgb16(
                 args.input,
                 max_frames=args.max_frames,
                 max_side=render_max_side,
             )
-        )
-        if len(render_video.frames) != len(decoded.frames):
-            raise RuntimeError(
-                "Analysis and render decodes have different frame counts."
+            if len(render_arrays) != len(decoded.frames):
+                raise RuntimeError("Analysis and render decodes have different frame counts.")
+            rendered_arrays = render_color_managed_frames(
+                render_arrays,
+                result.frame_parameters,
+                executor=render_executor,
+                operations=operations,
+                input_color_space=args.input_color_space,
+                working_color_space=args.working_color_space,
+                output_color_space=args.output_color_space,
+                batch_size=args.render_batch_size,
+                device=pool_render_device,
+                mask_tracker=mask_tracker,
+                pq_reference_white_nits=args.pq_reference_white_nits,
+                ocio_manager=ocio_manager,
+                ocio_spaces=ocio_names,
             )
-        rendered_frames = render_grade_frames(
-            render_video.frames,
-            result.frame_parameters,
-            executor=render_executor,
-            operations=(() if unified_result is None else unified_result.operations),
-            operation_executor=operation_executor,
-            batch_size=args.render_batch_size,
-        )
-        encode_video(render_video.frames, source_video_output, render_video.fps)
-        encode_video(rendered_frames, result_video_output, render_video.fps)
+            delivery_depth = args.output_bit_depth
+            if delivery_depth == 8:
+                source_proxy = _analysis_decode(
+                    args.input,
+                    color_space=args.input_color_space,
+                    max_frames=args.max_frames,
+                    max_side=render_max_side,
+                    working_space=args.working_color_space,
+                    ocio_manager=ocio_manager,
+                    ocio_spaces=ocio_names,
+                    pq_reference_white_nits=args.pq_reference_white_nits,
+                )
+                encode_video(source_proxy.frames, source_video_output, render_info.fps)
+                encode_video(
+                    (
+                        Image.fromarray(
+                            (np.clip(frame, 0, 1) * 255 + 0.5).astype(np.uint8),
+                            mode="RGB",
+                        )
+                        for frame in rendered_arrays
+                    ),
+                    result_video_output,
+                    render_info.fps,
+                )
+                codec = "H.264/libx264 8-bit"
+                audio_preserved = False
+            else:
+                encode_video_high_bit(
+                    render_arrays,
+                    source_video_output,
+                    render_info.fps,
+                    bit_depth=delivery_depth,
+                    color_space=args.input_color_space,
+                    audio_source=args.input,
+                )
+                encode_video_high_bit(
+                    rendered_arrays,
+                    result_video_output,
+                    render_info.fps,
+                    bit_depth=delivery_depth,
+                    color_space=args.output_color_space,
+                    audio_source=args.input,
+                )
+                codec = f"HEVC/libx265 {delivery_depth}-bit"
+                audio_preserved = has_audio_stream(args.input)
+            render_width, render_height, render_fps = (
+                render_info.width,
+                render_info.height,
+                render_info.fps,
+            )
+        else:
+            render_video = (
+                decoded
+                if render_max_side == analysis_max_side
+                else decode_video(
+                    args.input,
+                    max_frames=args.max_frames,
+                    max_side=render_max_side,
+                )
+            )
+            if len(render_video.frames) != len(decoded.frames):
+                raise RuntimeError("Analysis and render decodes have different frame counts.")
+            rendered_frames = render_grade_frames(
+                render_video.frames,
+                result.frame_parameters,
+                executor=render_executor,
+                operations=operations,
+                operation_executor=operation_executor,
+                batch_size=args.render_batch_size,
+                device=pool_render_device,
+                mask_tracker=mask_tracker,
+                use_torch_pools=not args.disable_torch_pools,
+            )
+            encode_video(render_video.frames, source_video_output, render_video.fps)
+            encode_video(rendered_frames, result_video_output, render_video.fps)
+            render_width, render_height, render_fps = (
+                render_video.width,
+                render_video.height,
+                render_video.fps,
+            )
+            codec = "H.264/libx264 8-bit"
+            audio_preserved = False
         payload["video_artifacts"] = {
             "input": str(source_video_output),
             "result": str(result_video_output),
-            "fps": render_video.fps,
-            "frame_count": len(render_video.frames),
-            "width": render_video.width,
-            "height": render_video.height,
+            "fps": render_fps,
+            "frame_count": len(decoded.frames),
+            "width": render_width,
+            "height": render_height,
             "analysis_width": decoded.width,
             "analysis_height": decoded.height,
-            "video_codec": "H.264/libx264",
-            "quality": "CRF approximately 15",
-            "audio_preserved": False,
+            "video_codec": codec,
+            "bit_depth": args.output_bit_depth,
+            "input_color_space": args.input_color_space,
+            "output_color_space": (
+                ocio_names["output"] if ocio_manager is not None else args.output_color_space
+            ),
+            "color_management": "OpenColorIO" if ocio_manager is not None else "built-in ACES/XYZ",
+            "pool_render_device": pool_render_device,
+            "gpu_pool_render": (
+                not args.disable_torch_pools
+                and pool_render_device.lower().startswith("cuda")
+            ),
+            "semantic_masks": ["person", "skin", "sky"],
+            "audio_preserved": audio_preserved,
         }
     if args.resolve_package_dir is not None:
         resolve_manifest = export_resolve_package(
@@ -347,23 +598,42 @@ def main() -> None:
     )
     if args.trajectory_output is not None:
         rows = []
+        pool_v2 = (
+            unified_result is not None
+            and unified_result.pool_metadata.get("schema_version")
+            == "pool-grade-graph/v2"
+        )
         for shot in result.shots:
-            rows.append(
-                {
-                    "source_video": str(decoded.source),
-                    "instruction": args.instruction,
-                    "shot": shot.shot.to_dict(),
-                    "accepted": shot.accepted,
-                    "rolled_back": shot.rolled_back,
-                    "rollback_reason": shot.rollback_reason,
-                    "attempts": [attempt.to_dict() for attempt in shot.attempts],
-                    "selected_parameters": {
-                        str(index): values.tolist()
-                        for index, values in sorted(shot.parameter_keyframes.items())
-                    },
-                    "search_memory": shot.search_memory,
+            row = {
+                "source_video": str(decoded.source),
+                "instruction": args.instruction,
+                "shot": shot.shot.to_dict(),
+                "accepted": shot.accepted,
+                "rolled_back": shot.rolled_back,
+                "rollback_reason": shot.rollback_reason,
+                "search_memory": shot.search_memory,
+            }
+            if pool_v2:
+                row["pool_operations"] = [
+                    operation.to_dict()
+                    for operation in unified_result.operations
+                    if operation.shot_id == shot.shot.shot_id
+                ]
+                row["pool_audit"] = next(
+                    (
+                        audit
+                        for audit in unified_result.operation_audit
+                        if audit.get("shot_id") == shot.shot.shot_id
+                    ),
+                    {},
+                )
+            else:
+                row["attempts"] = [attempt.to_dict() for attempt in shot.attempts]
+                row["selected_parameters"] = {
+                    str(index): values.tolist()
+                    for index, values in sorted(shot.parameter_keyframes.items())
                 }
-            )
+            rows.append(row)
         args.trajectory_output.parent.mkdir(parents=True, exist_ok=True)
         args.trajectory_output.write_text(
             "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),

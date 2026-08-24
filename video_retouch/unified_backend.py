@@ -29,13 +29,17 @@ from .critic import (
     VisionReviewCritic,
 )
 from .models import GradeGraph
+from .grade_pools import POOL_OPERATION_TYPES, POOL_PROCESSING_ORDER, pool_contract
 from .operations import OperationExecutor
 from .pipeline import DynamicGradePipeline
+from .pool_pipeline import PoolGradePipeline
 from .shot_planner import LongVideoStoryboardSettings, VLShotPlanner
 from .tasks import operation_plan_prompt, operation_review_prompt
 
 
 SUPPORTED_OPERATIONS = frozenset({"global_grade", "tone_curve", "hsl_grade", "lut"})
+POOL_SUPPORTED_OPERATIONS = POOL_OPERATION_TYPES
+ALL_SUPPORTED_OPERATIONS = SUPPORTED_OPERATIONS | POOL_SUPPORTED_OPERATIONS
 RESOLVE_OPERATIONS = frozenset({"global_grade"})
 KNOWN_OPERATIONS = frozenset(
     {
@@ -47,6 +51,7 @@ KNOWN_OPERATIONS = frozenset(
         "denoise",
         "deblur",
         "generative_edit",
+        *POOL_OPERATION_TYPES,
     }
 )
 
@@ -84,12 +89,15 @@ class EditOperation:
     frame_range: tuple[int, int]
     keyframe: int
     parameters: dict[str, object]
+    parameter_track: tuple[dict[str, object], ...] = ()
+    temporal_policy: str = "shot_static"
+    mask_id: str = "global"
     dependencies: tuple[str, ...] = ()
     confidence: float = 0.0
     provenance: dict[str, object] = field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, object]:
-        return {
+    def to_dict(self, include_parameter_track: bool = True) -> dict[str, object]:
+        payload = {
             "operation_id": self.operation_id,
             "type": self.operation_type,
             "scope": {
@@ -99,10 +107,17 @@ class EditOperation:
                 "keyframe": self.keyframe,
             },
             "parameters": dict(self.parameters),
+            "temporal_policy": self.temporal_policy,
+            "mask": self.mask_id,
             "dependencies": list(self.dependencies),
             "confidence": self.confidence,
             "provenance": dict(self.provenance),
         }
+        if include_parameter_track:
+            payload["parameter_track"] = [
+                dict(values) for values in self.parameter_track
+            ]
+        return payload
 
 
 @dataclass(frozen=True)
@@ -111,6 +126,7 @@ class UnifiedVideoEditResult:
     operations: tuple[EditOperation, ...]
     runtime_manifest: dict[str, object]
     operation_audit: tuple[dict[str, object], ...] = ()
+    pool_metadata: dict[str, object] = field(default_factory=dict)
 
     def to_dict(self, include_frame_parameters: bool = True) -> dict[str, object]:
         payload = self.grade_graph.to_dict(
@@ -122,12 +138,37 @@ class UnifiedVideoEditResult:
             if isinstance(runtime_operations, dict)
             else []
         )
+        runtime_schema = (
+            runtime_operations.get("schema_version", "video-edit-operation-graph/v1")
+            if isinstance(runtime_operations, dict)
+            else "video-edit-operation-graph/v1"
+        )
+        pool_v2 = runtime_schema == "video-edit-operation-graph/v2"
+        if pool_v2:
+            payload["schema_version"] = "pool-grade-graph/v2"
+            payload.pop("parameter_schema", None)
+            payload.pop("frame_parameters", None)
+            for shot in payload.get("shots", []):
+                if isinstance(shot, dict):
+                    shot.pop("parameter_names", None)
+                    shot.pop("base_parameters", None)
+                    shot.pop("parameter_keyframes", None)
+            payload["pool_metadata"] = dict(self.pool_metadata)
         payload["operation_graph"] = {
-            "schema_version": "video-edit-operation-graph/v1",
-            "supported_operations": sorted(SUPPORTED_OPERATIONS),
+            "schema_version": runtime_schema,
+            "supported_operations": sorted(
+                POOL_SUPPORTED_OPERATIONS if pool_v2 else SUPPORTED_OPERATIONS
+            ),
             "enabled_operations": list(enabled_operations),
             "resolve_supported_operations": sorted(RESOLVE_OPERATIONS),
-            "operations": [operation.to_dict() for operation in self.operations],
+            "processing_order": list(POOL_PROCESSING_ORDER) if pool_v2 else [],
+            "pool_contract": pool_contract() if pool_v2 else None,
+            "operations": [
+                operation.to_dict(
+                    include_parameter_track=include_frame_parameters
+                )
+                for operation in self.operations
+            ],
             "audit": list(self.operation_audit),
         }
         payload["backend_runtime"] = self.runtime_manifest
@@ -142,7 +183,9 @@ def _object(value: object, field_name: str) -> dict[str, object]:
     return value
 
 
-def _enabled_operations(config: dict[str, object]) -> tuple[str, ...]:
+def _enabled_operations(
+    config: dict[str, object], grade_schema: str
+) -> tuple[str, ...]:
     raw = config.get("operations", {"global_grade": True})
     operations = _object(raw, "backend.operations")
     unknown = set(operations) - KNOWN_OPERATIONS
@@ -161,14 +204,21 @@ def _enabled_operations(config: dict[str, object]) -> tuple[str, ...]:
     enabled = tuple(
         name for name in sorted(KNOWN_OPERATIONS) if bool(operations.get(name, False))
     )
-    unsupported = set(enabled) - SUPPORTED_OPERATIONS
+    supported = (
+        POOL_SUPPORTED_OPERATIONS
+        if grade_schema == "pool-graph/v2"
+        else SUPPORTED_OPERATIONS
+    )
+    unsupported = set(enabled) - supported
     if unsupported:
         raise ValueError(
-            "Operations are configured but not implemented in operation-graph/v1: "
+            f"Operations are configured but not implemented in {grade_schema}: "
             + ", ".join(sorted(unsupported))
         )
-    if "global_grade" not in enabled:
+    if grade_schema == "legacy-12d/v1" and "global_grade" not in enabled:
         raise ValueError("The v1 unified backend requires global_grade.")
+    if grade_schema == "pool-graph/v2" and not enabled:
+        raise ValueError("The v2 unified backend requires at least one Grade Pool.")
     return enabled
 
 
@@ -235,8 +285,8 @@ def _operation_policy(config: dict[str, object]) -> dict[str, object]:
     if unknown:
         raise ValueError(f"Unknown operation_policy fields: {sorted(unknown)}")
     maximum_operations = int(raw.get("maximum_operations_per_shot", 3))
-    if not 1 <= maximum_operations <= 8:
-        raise ValueError("maximum_operations_per_shot must be in [1,8].")
+    if not 1 <= maximum_operations <= 12:
+        raise ValueError("maximum_operations_per_shot must be in [1,12].")
     maximum_delta = float(raw.get("maximum_additional_fidelity_l1", 0.12))
     maximum_clipping = float(raw.get("maximum_added_clipping", 0.03))
     minimum_score = float(raw.get("minimum_review_score", 0.60))
@@ -326,60 +376,99 @@ class UnifiedVLVideoBackend:
         operation_policy: Optional[dict[str, object]] = None,
         visual_operation_review: bool = True,
         manifest: Optional[dict[str, object]] = None,
+        grade_schema: str = "legacy-12d/v1",
+        safety_settings: Optional[dict[str, object]] = None,
+        review_settings: Optional[dict[str, object]] = None,
     ) -> None:
         self.client = client
+        self.grade_schema = grade_schema
         self.enabled_operations = tuple(enabled_operations)
         self.search_settings = search
         self.operation_executor = operation_executor or OperationExecutor()
         self.operation_policy = operation_policy or {}
         self.visual_operation_review = bool(visual_operation_review)
-        self.editor = VLAnchorBackend(
-            client,
-            stages=tuple(
-                str(stage)
-                for stage in editor_settings.get(
-                    "stages", ["lighting", "white_balance_and_color", "tone"]
-                )
-            ),
-            candidate_count=int(editor_settings.get("candidate_count", 16)),
-            seed=int(editor_settings.get("seed", search.seed)),
-            name=self.name,
-            use_mkl_prior=bool(editor_settings.get("use_mkl_prior", True)),
-            mkl_strength=float(editor_settings.get("mkl_strength", 0.35)),
-            mkl_projection_iterations=int(
-                editor_settings.get("mkl_projection_iterations", 40)
-            ),
-        )
         self.critic = critic
         self.shot_planner = VLShotPlanner(
             client=client,
             settings=storyboard_settings,
             strict=not allow_storyboard_fallback,
         )
-        self.pipeline = DynamicGradePipeline(
-            shot_planner=self.shot_planner,
-            anchor_backend=self.editor,
-            critic=critic,
-            anchors_per_shot=anchors_per_shot,
-            maximum_anchors_per_shot=maximum_anchors_per_shot,
-            maximum_attempts=(
-                search.maximum_evaluations
-                if maximum_evaluations is None
-                else maximum_evaluations
-            ),
-            maximum_hero_attempts=search.maximum_hero_attempts,
-            mcts_exploration=search.exploration_constant,
-            mcts_rejection_penalty=search.rejection_penalty,
-            mcts_seed=search.seed,
-        )
-        # This search still performs Anchor replacement and rollback, but no
-        # longer selects among public editor backends.
-        self.pipeline.search.name = "unified-anchor-trajectory-search/v1"
+        self.editor = None
+        self.pipeline = None
+        self.pool_pipeline = None
+        if grade_schema == "pool-graph/v2":
+            safety = safety_settings or {}
+            review = review_settings or {}
+            self.pool_pipeline = PoolGradePipeline(
+                client=client,
+                shot_planner=self.shot_planner,
+                stages=tuple(
+                    str(stage)
+                    for stage in editor_settings.get(
+                        "stages",
+                        ["technical", "look", "selective_color", "texture", "optical"],
+                    )
+                ),
+                review_enabled=bool(review.get("enabled", True)),
+                review_strict=bool(review.get("strict", True)),
+                anchors_per_shot=anchors_per_shot,
+                maximum_anchors_per_shot=maximum_anchors_per_shot,
+                maximum_hero_attempts=search.maximum_hero_attempts,
+                maximum_stage_attempts=int(
+                    self.operation_policy.get("maximum_planning_attempts", 2)
+                ),
+                maximum_fidelity_l1=float(
+                    safety.get("maximum_fidelity_l1", 0.42)
+                ),
+                maximum_clipping=float(safety.get("maximum_clipping", 0.20)),
+                minimum_review_score=float(review.get("acceptance_score", 0.60)),
+                transactional=bool(editor_settings.get("transactional", True)),
+                enabled_operations=self.enabled_operations,
+            )
+        else:
+            self.editor = VLAnchorBackend(
+                client,
+                stages=tuple(
+                    str(stage)
+                    for stage in editor_settings.get(
+                        "stages", ["lighting", "white_balance_and_color", "tone"]
+                    )
+                ),
+                candidate_count=int(editor_settings.get("candidate_count", 16)),
+                seed=int(editor_settings.get("seed", search.seed)),
+                name=self.name,
+                use_mkl_prior=bool(editor_settings.get("use_mkl_prior", True)),
+                mkl_strength=float(editor_settings.get("mkl_strength", 0.35)),
+                mkl_projection_iterations=int(
+                    editor_settings.get("mkl_projection_iterations", 40)
+                ),
+            )
+            self.pipeline = DynamicGradePipeline(
+                shot_planner=self.shot_planner,
+                anchor_backend=self.editor,
+                critic=critic,
+                anchors_per_shot=anchors_per_shot,
+                maximum_anchors_per_shot=maximum_anchors_per_shot,
+                maximum_attempts=(
+                    search.maximum_evaluations
+                    if maximum_evaluations is None
+                    else maximum_evaluations
+                ),
+                maximum_hero_attempts=search.maximum_hero_attempts,
+                mcts_exploration=search.exploration_constant,
+                mcts_rejection_penalty=search.rejection_penalty,
+                mcts_seed=search.seed,
+            )
+            self.pipeline.search.name = "unified-anchor-trajectory-search/v1"
         self.runtime_manifest = manifest or {}
 
     @property
     def executor(self):
-        return self.pipeline.executor
+        if self.pipeline is not None:
+            return self.pipeline.executor
+        from retouch_agent import RetouchExecutor
+
+        return RetouchExecutor()
 
     @staticmethod
     def _global_operations(graph: GradeGraph) -> tuple[EditOperation, ...]:
@@ -719,6 +808,22 @@ class UnifiedVLVideoBackend:
         return tuple(operations), tuple(audits)
 
     def process(self, request: VideoEditRequest) -> UnifiedVideoEditResult:
+        if self.pool_pipeline is not None:
+            result = self.pool_pipeline.run(
+                request.frames,
+                request.fps,
+                request.instruction,
+                reference_frames=request.reference_frames,
+                reference_fps=request.reference_fps,
+            )
+            return UnifiedVideoEditResult(
+                grade_graph=result.grade_graph,
+                operations=result.operations,
+                runtime_manifest=self.runtime_manifest,
+                operation_audit=result.audit,
+                pool_metadata=result.metadata,
+            )
+        assert self.pipeline is not None
         graph = self.pipeline.run(
             request.frames,
             request.fps,
@@ -757,7 +862,10 @@ def build_unified_backend(
     if backend_type != "unified_vl_video":
         raise ValueError(f"Unsupported unified backend type: {backend_type}")
 
-    enabled_operations = _enabled_operations(backend)
+    grade_schema = str(backend.get("grade_schema", "legacy-12d/v1"))
+    if grade_schema not in {"legacy-12d/v1", "pool-graph/v2"}:
+        raise ValueError(f"Unsupported grade_schema: {grade_schema}")
+    enabled_operations = _enabled_operations(backend, grade_schema)
     shared_client = client or build_vision_client(backend, "unified backend")
     lut_catalog = _lut_catalog(backend, config_root or Path.cwd())
     if "lut" in enabled_operations and not lut_catalog:
@@ -780,8 +888,17 @@ def build_unified_backend(
     roles = ["storyboard", "editor"]
     if review_enabled:
         roles.append("review")
+    operation_schema = (
+        "video-edit-operation-graph/v2"
+        if grade_schema == "pool-graph/v2"
+        else "video-edit-operation-graph/v1"
+    )
     manifest = {
-        "mode": "unified-single-backend/v1",
+        "mode": (
+            "unified-single-backend/pool-v2"
+            if grade_schema == "pool-graph/v2"
+            else "unified-single-backend/v1"
+        ),
         "backend": {
             "name": UnifiedVLVideoBackend.name,
             "type": backend_type,
@@ -791,9 +908,14 @@ def build_unified_backend(
             "roles": roles,
         },
         "operations": {
-            "schema_version": "video-edit-operation-graph/v1",
+            "schema_version": operation_schema,
+            "grade_schema": grade_schema,
             "enabled": list(enabled_operations),
-            "implemented": sorted(SUPPORTED_OPERATIONS),
+            "implemented": sorted(
+                POOL_SUPPORTED_OPERATIONS
+                if grade_schema == "pool-graph/v2"
+                else SUPPORTED_OPERATIONS
+            ),
             "resolve_supported": sorted(RESOLVE_OPERATIONS),
             "lut_ids": list(operation_executor.lut_ids),
             "policy": dict(operation_policy),
@@ -809,7 +931,14 @@ def build_unified_backend(
         "editor": {
             "name": UnifiedVLVideoBackend.name,
             "stages": list(
-                editor.get("stages", ["lighting", "white_balance_and_color", "tone"])
+                editor.get(
+                    "stages",
+                    (
+                        ["technical", "look", "selective_color", "texture", "optical"]
+                        if grade_schema == "pool-graph/v2"
+                        else ["lighting", "white_balance_and_color", "tone"]
+                    ),
+                )
             ),
             "candidate_count": int(editor.get("candidate_count", 16)),
             "use_mkl_prior": bool(editor.get("use_mkl_prior", True)),
@@ -819,13 +948,18 @@ def build_unified_backend(
             "deterministic_safety_veto": True,
         },
         "search": {
-            "algorithm": "unified-anchor-trajectory-search/v1",
+            "algorithm": (
+                "pool-anchor-diffusion/v2"
+                if grade_schema == "pool-graph/v2"
+                else "unified-anchor-trajectory-search/v1"
+            ),
             "maximum_evaluations": (
                 search.maximum_evaluations
                 if maximum_evaluations is None
                 else maximum_evaluations
             ),
             "maximum_hero_attempts": search.maximum_hero_attempts,
+            "maximum_anchors_per_shot": maximum_anchors_per_shot,
             "seed": search.seed,
         },
     }
@@ -844,6 +978,9 @@ def build_unified_backend(
         operation_policy=operation_policy,
         visual_operation_review=review_enabled,
         manifest=manifest,
+        grade_schema=grade_schema,
+        safety_settings=_object(backend.get("safety"), "backend.safety"),
+        review_settings=_object(backend.get("review"), "backend.review"),
     )
 
 

@@ -1,6 +1,7 @@
 {
   "backend": {
     "type": "unified_vl_video",
+    "grade_schema": "pool-graph/v2",
     "provider": "openai_compatible",
     "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
     "model": "gemini-3.5-flash-lite",
@@ -15,14 +16,15 @@
     "max_image_side": 768,
 
     "operations": {
-      "global_grade": true,
-      "tone_curve": false,
-      "hsl_grade": false,
-      "masked_grade": false,
-      "lut": false,
-      "denoise": false,
-      "deblur": false,
-      "generative_edit": false
+      "primary": true,
+      "white_balance": true,
+      "global_color": true,
+      "hsl8": true,
+      "color_wheels": true,
+      "curves": true,
+      "texture": true,
+      "optical_effects": true,
+      "denoise": true
     },
 
     "storyboard": {
@@ -44,10 +46,10 @@
     },
 
     "editor": {
-      "stages": ["lighting"],
+      "stages": ["technical", "look", "selective_color", "texture", "optical"],
       "candidate_count": 4,
       "seed": 7,
-      "use_mkl_prior": false
+      "transactional": true
     },
 
     "review": {

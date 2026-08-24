@@ -22,6 +22,8 @@ ANCHOR_MATCH_TASK = "<TASK_ANCHOR_MATCH>"
 CRITIQUE_TASK = "<TASK_CRITIQUE>"
 OPERATION_PLAN_TASK = "<TASK_OPERATION_PLAN>"
 OPERATION_REVIEW_TASK = "<TASK_OPERATION_REVIEW>"
+POOL_GRADE_TASK = "<TASK_POOL_GRADE_V2>"
+POOL_REVIEW_TASK = "<TASK_POOL_REVIEW_V2>"
 
 AGENT_SYSTEM_PROMPT = """
 You are one specialized component in a professional multi-model video color
@@ -380,5 +382,86 @@ Operations: {json.dumps(operations, ensure_ascii=False)}
 Return JSON only:
 {{"accept":true,"score":0.0,"reasons":["..."],
 "instruction_score":0.0,"preservation_score":0.0}}
+All scores are in [0,1].
+""".strip()
+
+
+def pool_grade_prompt(
+    instruction: str,
+    stage: str,
+    allowed_types: list[str],
+    current_operations: list[dict[str, object]],
+    *,
+    hero_frame: int | None = None,
+) -> str:
+    from .grade_pools import pool_contract
+
+    reference = (
+        "Develop the Hero Anchor look from its source and current preview."
+        if hero_frame is None
+        else (
+            f"Match the target Anchor to accepted Hero frame {hero_frame}. "
+            "Transfer color relationships and treatment, not scene exposure or "
+            "raw pixels; protect skin and memory colors."
+        )
+    )
+    return f"""
+{POOL_GRADE_TASK}
+Act as a professional operation-aware colorist. {reference}
+At stage {stage!r}, return only sparse operations whose type is in
+{json.dumps(allowed_types)}. Omit unnecessary Pools. Each Pool may appear at
+most once. Parameters are absolute values for that Pool, not deltas. Preserve
+identity, texture, legitimate lighting, highlight detail, shadow detail, skin,
+and temporal continuity. Do not synthesize pixels.
+
+Instruction: {instruction}
+Current accepted operations:
+{json.dumps(current_operations, ensure_ascii=False)}
+Pool contract:
+{json.dumps(pool_contract(), ensure_ascii=False)}
+
+Curves use keys rgb/red/green/blue, each containing 2-16 monotonic [x,y]
+points from [0,0] to [1,1], plus optional strength. Color wheels should use
+hue [-180,180] and saturation [0,100] for shadows/midtones/highlights.
+HSL8 keys are red/orange/yellow/green/aqua/blue/purple/magenta and each value
+contains hue/saturation/luminance sliders. Optical effects use the nested
+objects in the contract. Every operation may include `"mask":"global"`,
+`"skin"`, `"sky"`, or `"person"`. Use a semantic mask only when the requested
+change is genuinely regional; global is the default. Returning no operations
+is valid.
+
+Return JSON only:
+{{"operations":[{{"type":"primary","parameters":{{"exposure":0.3,
+"highlights":-15}},"mask":"global","reason":"...","confidence":0.8}}],
+"diagnosis":["..."],"constraints":["..."],"confidence":0.8}}
+""".strip()
+
+
+def pool_review_prompt(
+    instruction: str,
+    shot_id: int,
+    operations: list[dict[str, object]],
+    *,
+    hero_frame: int | None,
+) -> str:
+    hero = (
+        "This is Hero look development."
+        if hero_frame is None
+        else f"The first reference pair is accepted Hero frame {hero_frame}."
+    )
+    return f"""
+{POOL_REVIEW_TASK}
+Review the source/final Pool-grade pairs as a conservative professional video
+colorist. {hero} Judge instruction adherence, coherent style, skin and memory
+colors, highlight/shadow preservation, noise, halos, oversharpening, color
+fringing, excessive bloom, and cross-frame consistency.
+
+Instruction: {instruction}
+Shot: {shot_id}
+Operations: {json.dumps(operations, ensure_ascii=False)}
+
+Return JSON only:
+{{"accept":true,"score":0.0,"instruction_score":0.0,
+"preservation_score":0.0,"temporal_score":0.0,"reasons":["..."]}}
 All scores are in [0,1].
 """.strip()

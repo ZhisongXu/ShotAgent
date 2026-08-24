@@ -9,6 +9,12 @@ from typing import Mapping, Sequence
 import numpy as np
 from PIL import Image
 
+from .grade_pools import (
+    POOL_OPERATION_TYPES,
+    GradePoolExecutor,
+    canonicalize_pool_parameters,
+)
+
 
 def _finite_float(value: object, field_name: str) -> float:
     result = float(value)
@@ -39,6 +45,8 @@ def canonicalize_operation_parameters(
 
     if not isinstance(parameters, dict):
         raise ValueError(f"{operation_type} parameters must be an object.")
+    if operation_type in POOL_OPERATION_TYPES:
+        return canonicalize_pool_parameters(operation_type, parameters)
     if operation_type == "tone_curve":
         unknown = set(parameters) - {"channel", "points", "strength"}
         if unknown:
@@ -263,6 +271,7 @@ class OperationExecutor:
             for name, path in (lut_catalog or {}).items()
         }
         self._lut_cache: dict[str, CubeLUT] = {}
+        self.pool_executor = GradePoolExecutor()
 
     @property
     def lut_ids(self) -> tuple[str, ...]:
@@ -323,11 +332,22 @@ class OperationExecutor:
         operations: Sequence[object],
         *,
         frame_index: int,
+        masks: Mapping[str, np.ndarray] | None = None,
     ) -> Image.Image:
         rgb = np.asarray(image.convert("RGB"), dtype=np.float32) / 255.0
+        if any(
+            str(getattr(operation, "operation_type")) in POOL_OPERATION_TYPES
+            for operation in operations
+        ):
+            rgb = self.pool_executor.apply_array(
+                rgb,
+                operations,
+                frame_index=frame_index,
+                masks=masks,
+            )
         for operation in operations:
             operation_type = str(getattr(operation, "operation_type"))
-            if operation_type == "global_grade":
+            if operation_type == "global_grade" or operation_type in POOL_OPERATION_TYPES:
                 continue
             start, end = getattr(operation, "frame_range")
             if not int(start) <= frame_index <= int(end):
@@ -344,3 +364,42 @@ class OperationExecutor:
             rgb = np.clip(rgb, 0.0, 1.0)
         output = (rgb * 255.0 + 0.5).astype(np.uint8)
         return Image.fromarray(output, mode="RGB")
+
+    def apply_pre_grade(
+        self,
+        image: Image.Image,
+        operations: Sequence[object],
+        *,
+        frame_index: int,
+        masks: Mapping[str, np.ndarray] | None = None,
+    ) -> Image.Image:
+        """Apply restoration nodes that must precede the color pipeline."""
+
+        rgb = np.asarray(image.convert("RGB"), dtype=np.float32) / 255.0
+        rgb = self.pool_executor.apply_array(
+            rgb,
+            operations,
+            frame_index=frame_index,
+            pre_grade_only=True,
+            masks=masks,
+        )
+        return Image.fromarray((rgb * 255.0 + 0.5).astype(np.uint8), mode="RGB")
+
+    def apply_post_grade(
+        self,
+        image: Image.Image,
+        operations: Sequence[object],
+        *,
+        frame_index: int,
+        masks: Mapping[str, np.ndarray] | None = None,
+    ) -> Image.Image:
+        """Apply Pool color/effect nodes and legacy post-grade operations."""
+
+        selected = [
+            operation
+            for operation in operations
+            if str(getattr(operation, "operation_type")) != "denoise"
+        ]
+        return self.apply(
+            image, selected, frame_index=frame_index, masks=masks
+        )
