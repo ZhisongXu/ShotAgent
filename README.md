@@ -1,352 +1,436 @@
-# BayesGrade / AnchorRetouchAgent
+# ShotAgent PoolGraph v2
 
-This repository is being refactored from the original **4KAgent** restoration
-system into a data-efficient, interpretable image/video retouching Agent.
-
-The primary video stack is exposed through one `UnifiedVLVideoBackend`:
+本 README 只说明当前主路径：使用一个视觉语言模型（VL）生成 `pool-graph/v2`，再由本地确定性执行器完成视频调色。
 
 ```text
-Video Perceiver: full-video scan + hierarchical VL shot/Anchor planning
-  → rank per-shot Anchors into a global HeroAnchor shortlist
-  → develop and approve one HeroAnchor as the master look
-  → match every other shot Anchor to the accepted Hero visual reference
-  → one VL editor producing sparse typed Grade Pool operations
-  → deterministic Pool executor + type-aware Bayesian temporal fields
-  → the same VL client reviews previews + deterministic temporal safety veto
-  → Anchor replacement, Hero reselection, and transactional rollback
+视频 + 调色指令
+  → VL 分镜、选择 Hero/Anchor
+  → VL 返回稀疏 Pool 参数
+  → 参数校验、Anchor 合并、逐帧扩散
+  → 本地 CPU/CUDA Pool 执行器渲染
+  → grade JSON + 调色后视频
 ```
 
-The public runtime uses one model endpoint for perception, editing decisions,
-and visual review. Deterministic pixel operators and safety metrics are internal
-capabilities rather than separately configured backends. The previous
-multi-agent manifest remains available as a compatibility path.
+当前文档和示例统一使用 `--backend-config` 进入 PoolGraph v2，不覆盖其他运行模式。
 
-## What is implemented
+## 1. 安装
 
-- Pool graph v2 with Primary, white balance, global color, HSL8, three-way
-  color wheels, four-channel curves, texture, optical effects, and denoise;
-- fixed operation order, strict model-output validation, and deterministic
-  per-frame grain;
-- Torch `BCHW` Pool rendering on CUDA with a complete Torch CPU fallback;
-- 16-bit RGB FFmpeg decode and HEVC 10/12-bit Rec.709, PQ, or HLG delivery;
-- built-in sRGB/Rec.709/LogC3/S-Log3/V-Log/PQ/HLG transforms through ACEScg,
-  plus optional studio OpenColorIO configs;
-- person, skin, and sky Pool masks with optical-flow tracking and periodic
-  semantic refresh;
-- hierarchical long-video VL planner with overlapping windows, boundary
-  adjudication, and per-shot Anchor ranking;
-- tournament-style HeroAnchor selection across all shot Anchors;
-- visual shot matching against the accepted graded HeroAnchor;
-- training-free heuristic planner retained only as an explicit ablation/fallback;
-- provider-neutral single-backend configuration with one shared VL client;
-- versioned sparse operation graph with per-Pool temporal policies;
-- legacy multi-editor UCT-MCTS selection and reward back-propagation;
-- legacy competing editing-Agent proposals and independent critic ensemble;
-- per-shot action memory, trajectory export, and transactional rollback;
-- Anchor parameter covariance output;
-- Bayesian temporal parameter field;
-- analytic and Langevin-disagreement Anchor acquisition.
+推荐 Python 3.11。
 
-The original NeurIPS 2025 4KAgent restoration code is retained under
-[`legacy/4kagent`](legacy/4kagent/) for reproducibility, but is no longer part of
-the main project import path.
+```bash
+git clone https://github.com/ZhisongXu/ShotAgent.git
+cd ShotAgent
 
-For a clean-machine setup, required downloads, OpenAI/MonetGPT configuration,
-and DaVinci Resolve application steps, see the Chinese
-[`INSTALLATION_AND_USAGE.zh-CN.md`](INSTALLATION_AND_USAGE.zh-CN.md) guide.
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
 
-## Video to grading parameters
+Windows PowerShell：
 
-The primary video entry point accepts a video plus a text instruction and emits
-an editable Pool graph. The JSON contains shot boundaries, Hero/Anchor audits,
-typed operation nodes, dense tracks only for controls that are allowed to vary
-over time, confidence, and rollback history. The old 12-D trajectory is not
-used or exposed by `pool-graph/v2`.
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+检查安装：
+
+```bash
+python retouch_video.py --help
+python -m unittest tests.test_grade_pools_v2
+```
+
+## 2. 放置 API Key
+
+API Key 只放在环境变量中，不要写入 JSON、源码或提交到 Git。配置文件里的 `api_key_env` 表示程序应该读取哪个环境变量。
+
+### 2.1 OpenAI
+
+复制 PoolGraph 配置：
+
+```bash
+cp configs/unified_vl.example.json configs/unified_vl.json
+```
+
+Linux/macOS：
+
+```bash
+export OPENAI_API_KEY="你的 API Key"
+```
+
+Windows PowerShell：
+
+```powershell
+$env:OPENAI_API_KEY="你的 API Key"
+```
+
+当前 OpenAI 配置的关键部分是：
+
+```json
+{
+  "backend": {
+    "type": "unified_vl_video",
+    "grade_schema": "pool-graph/v2",
+    "provider": "openai_responses",
+    "base_url": "https://api.openai.com/v1",
+    "model": "gpt-5.6-sol",
+    "api_key_env": "OPENAI_API_KEY"
+  }
+}
+```
+
+若要换模型，只修改本地 `configs/unified_vl.json` 中的 `model`。不要修改 `grade_schema`。
+
+### 2.2 Gemini OpenAI-compatible endpoint
+
+低请求量 smoke test：
+
+```bash
+cp configs/unified_vl.gemini-free.json configs/unified_vl.json
+export GEMINI_API_KEY="你的 API Key"
+```
+
+完整 Pool 阶段与 VL review：
+
+```bash
+cp configs/unified_vl.gemini-full.json configs/unified_vl.json
+export GEMINI_API_KEY="你的 API Key"
+```
+
+Windows PowerShell 使用：
+
+```powershell
+$env:GEMINI_API_KEY="你的 API Key"
+```
+
+Gemini 配置使用：
+
+```json
+{
+  "provider": "openai_compatible",
+  "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+  "api_key_env": "GEMINI_API_KEY"
+}
+```
+
+`gemini-free` 关闭视觉 review，并降低分镜图片数和尝试次数，适合验证整条链路；`gemini-full` 启用完整五阶段和 review，API 调用更多。
+
+### 2.3 使用本地密钥文件
+
+程序不会自动读取环境变量文件。如果希望本地保存 Key，可放在仓库已经通过 `.gitignore` 排除的 `.secrets/` 目录：
+
+```bash
+mkdir -p .secrets
+printf 'OPENAI_API_KEY="在这里填写 Key"\n' > .secrets/poolgraph.env
+```
+
+运行前手动载入：
+
+```bash
+set -a
+source .secrets/poolgraph.env
+set +a
+```
+
+不要提交其他位置的密钥文件，也不要在终端截图、日志或 grade JSON 中暴露 Key。
+
+## 3. 最小运行命令
+
+准备一个输入视频，例如 `input.mp4`，然后运行：
+
+```bash
+mkdir -p outputs
+
+python retouch_video.py \
+  --input input.mp4 \
+  --instruction "自然暖色电影感，保护肤色与高光" \
+  --backend-config configs/unified_vl.json \
+  --output outputs/input.poolgraph.json \
+  --video-output-dir outputs/input_videos
+```
+
+主要输出：
+
+```text
+outputs/input.poolgraph.json
+outputs/input_videos/input.source.mp4
+outputs/input_videos/input.graded.mp4
+```
+
+- `input.poolgraph.json`：镜头、Hero/Anchor audit、Pool operation graph、动态 parameter track 和 rollback 信息；
+- `input.source.mp4`：本次实际解码/缩放后的源视频；
+- `input.graded.mp4`：最终 PoolGraph 渲染结果。
+
+只生成 PoolGraph JSON、不渲染视频时，省略 `--video-output-dir`。
+
+## 4. 使用参考视频
+
+参考视频只负责建立 Hero look；最终 Pool 节点和成片应用到目标视频：
+
+```bash
+python retouch_video.py \
+  --input target.mp4 \
+  --reference-video reference.mp4 \
+  --instruction "匹配参考视频的柔和电影感，同时保留目标场景真实曝光" \
+  --backend-config configs/unified_vl.json \
+  --output outputs/target.poolgraph.json \
+  --video-output-dir outputs/target_videos
+```
+
+输出的 `pool_metadata.hero.source_video` 应为 `reference_video`。
+
+## 5. 常用运行参数
+
+### 5.1 分开控制分析和渲染分辨率
+
+VL 使用较小代理图，最终成片重新按较大尺寸解码：
 
 ```bash
 python retouch_video.py \
   --input input.mp4 \
-  --reference-video reference.mp4 \
-  --instruction "natural warm cinematic grade with protected skin tones" \
-  --backend-config configs/unified_vl.gemini-full.json \
-  --output outputs/input.grade.json \
-  --trajectory-output outputs/input.rollouts.jsonl \
+  --instruction "自然、克制的商业广告调色" \
+  --backend-config configs/unified_vl.json \
+  --output outputs/input.poolgraph.json \
   --video-output-dir outputs/input_videos \
   --analysis-max-side 960 \
   --render-max-side 1920
 ```
 
-`--reference-video` is optional. When supplied, the storyboard Agent selects
-the HeroShot from that video, the editor develops its grade, and all target
-video Anchors match the pair of reference source frame and accepted graded
-reference frame. Only the target video receives the resulting Pool tracks and
-rendered output. `pool_metadata.hero.source_video` records the reference source.
+`--analysis-max-side` 不会改变帧编号。分析解码与渲染解码的帧数必须一致。
 
-The video directory contains `<input>.source.mp4` and `<input>.graded.mp4`.
-The Agent can reason over a lightweight proxy while the accepted dense
-trajectory is rendered from a separate high-resolution decode. The default is
-high-quality 8-bit H.264. A 10/12-bit render uses HEVC and copies source audio
-when present.
+### 5.2 GPU/CPU
 
-For example, grade S-Log3 in ACEScg and deliver 10-bit HDR PQ:
+默认有 CUDA 时使用 CUDA，否则使用 Torch CPU：
+
+```bash
+--render-device cuda
+--render-device cuda:1
+--render-device cpu
+```
+
+完整示例：
+
+```bash
+python retouch_video.py \
+  --input input.mp4 \
+  --instruction "自然电影感" \
+  --backend-config configs/unified_vl.json \
+  --output outputs/input.poolgraph.json \
+  --video-output-dir outputs/input_videos \
+  --render-device cuda \
+  --render-batch-size 8
+```
+
+显存不足时降低 `--render-batch-size` 或 `--render-max-side`。
+
+### 5.3 限制帧数做 API smoke test
+
+先用短片或少量帧验证 Key、模型和 JSON 返回格式：
+
+```bash
+python retouch_video.py \
+  --input input.mp4 \
+  --instruction "轻微提升曝光，保持自然" \
+  --backend-config configs/unified_vl.json \
+  --output outputs/smoke.poolgraph.json \
+  --max-frames 24 \
+  --analysis-max-side 640
+```
+
+`--max-frames` 会让输出只覆盖前 N 帧，不是只分析前 N 帧后再渲染完整视频。
+
+### 5.4 精简 JSON
+
+```bash
+--compact
+```
+
+该选项省略逐帧 `parameter_track`。如果下游需要重建动态 Primary、白平衡或降噪轨迹，不要使用它。
+
+## 6. Log、HDR 和 10/12-bit 输出
+
+例如 S-Log3 输入、ACEScg 工作空间、10-bit Rec.2020 PQ 输出：
 
 ```bash
 python retouch_video.py \
   --input camera-log.mov \
-  --instruction "natural cinematic contrast; protect skin and sky" \
+  --instruction "电影感对比，保护肤色、天空和高光" \
   --backend-config configs/unified_vl.json \
-  --output outputs/camera-log.grade.json \
+  --output outputs/camera-log.poolgraph.json \
   --video-output-dir outputs/camera-log-videos \
   --input-color-space slog3 \
   --working-color-space acescg \
   --output-color-space rec2020_pq \
   --output-bit-depth 10 \
+  --pq-reference-white-nits 203 \
   --render-device cuda
 ```
 
-Analysis uses a tone-mapped sRGB proxy, but delivery is decoded as `rgb48le`,
-graded in float32 batches, and encoded without an 8-bit intermediate. For a
-studio OCIO config, install `requirements-color.txt` and additionally pass
-`--ocio-config` plus the four explicit `--ocio-*-space` names. Masked Pool nodes
-use `"mask": "person"`, `"skin"`, or `"sky"`; omitted masks are global.
+高位深路径使用 16-bit RGB 解码、float32 渲染和 HEVC 10/12-bit 编码，并在源视频包含音频时复制音频。VL 看到的是 tone-mapped sRGB 代理。
 
-The Resolve DCTL exporter remains available for the legacy 12-D compatibility
-runtime. Pool v2 effects such as denoise, clarity, bloom, vignette, chromatic
-aberration, and grain are spatial operators and cannot be represented faithfully
-by a global LUT/DCTL package; use `--video-output-dir` for a complete Pool v2
-render.
-
-Resolve's public API can apply LUTs and keyframed DRX grades but cannot create
-arbitrary Color-page parameter keyframes. The generated Resolve 19.1+ DCTL uses
-`TIMELINE_FRAME_INDEX` to interpolate the exported controls at render time.
-After conforming the timeline to exactly one clip per manifest shot, create a
-dedicated empty Color node at the same index on every clip, then run:
+如需工作室 OpenColorIO 配置：
 
 ```bash
-python outputs/input_resolve/apply_dynamic_grade.py \
-  --lut-dir /path/already/configured/in/resolve \
-  --video-track 1 \
-  --node-index 2
+python -m pip install -r requirements-color.txt
 ```
 
-The node index is mandatory so the script cannot silently choose which existing
-grade to replace. Direct scripting requires DaVinci Resolve to be running and
-its bundled scripting API to be available.
-
-MonetGPT's final adjustment JSON can also be converted without running its
-GIMP/NumPy image executor:
+然后同时提供：
 
 ```bash
-python monet_to_resolve.py \
-  --input outputs/monet_adjustments.json \
-  --output-dir outputs/monet_resolve
+--ocio-config /path/to/config.ocio \
+--ocio-input-space "Input Space" \
+--ocio-working-space "ACEScg" \
+--ocio-display-space "sRGB Display" \
+--ocio-output-space "Output Space"
 ```
 
-The input may be one native MonetGPT adjustment object such as
-`{"Exposure": 20, "Highlights": -15, "Saturation": 8}`, or a `shots` array
-whose entries contain `shot_id`, optional frame bounds, and `adjustments`.
-Global controls are mapped to the shared GradeIR and baked into per-shot
-Resolve LUTs. The manifest records approximated and unsupported controls;
-use `--strict` to reject selective HSL, dehaze, spatial, or other controls that
-the current GradeIR cannot reproduce exactly.
+## 7. PoolGraph 配置
 
-To put this parameter path inside the normal critic/MCTS rollback transaction,
-configure it as an editor Agent:
+必须保持：
 
 ```json
 {
-  "name": "monet-parameter-editor",
-  "type": "monet_parameters",
-  "root": "/absolute/path/to/monetGPT",
-  "style": "balanced",
-  "hero_match_strength": 0.35,
-  "reject_unsupported": true
+  "backend": {
+    "type": "unified_vl_video",
+    "grade_schema": "pool-graph/v2"
+  }
 }
 ```
 
-The backend reads MonetGPT's final JSON rather than its rendered TIFF, creates
-the exact preview represented by the future Resolve LUT, and submits that
-preview to the existing critics. MonetGPT remains a single-image call: it runs
-only on selected Hero/shot Anchors, blends target-Anchor parameters toward the
-accepted Hero look, and lets the shared Bayesian diffuser create the full video
-trajectory. `hero_match_strength` controls that blend from `0` (independent
-Monet result) to `1` (Hero parameters), with `0.35` as the default. A rejected
-proposal is discarded by MCTS; if no Hero/shot trajectory passes, the video
-grade rolls back to identity.
+当前可启用的 9 类 Pool：
 
-### Model providers
+```json
+{
+  "operations": {
+    "denoise": true,
+    "white_balance": true,
+    "primary": true,
+    "color_wheels": true,
+    "curves": true,
+    "hsl8": true,
+    "global_color": true,
+    "texture": true,
+    "optical_effects": true
+  }
+}
+```
 
-The unified backend supports both OpenAI's native Responses API and
-OpenAI-compatible multimodal endpoints. In either mode, one provider/model
-client is shared by storyboard perception, Hero/shot editing, and visual
-review; switching providers does not create a legacy editor/evaluator pool.
+VL 分阶段返回稀疏操作：
 
-For OpenAI, copy the primary configuration and export the key locally:
+```text
+technical       denoise, white_balance, primary
+look            color_wheels, curves, global_color
+selective_color hsl8
+texture         texture
+optical         optical_effects
+```
+
+无论 VL 以什么顺序返回，像素始终按以下顺序执行：
+
+```text
+denoise
+→ white_balance
+→ primary
+→ color_wheels
+→ curves
+→ hsl8
+→ global_color
+→ texture
+→ optical_effects
+```
+
+每个操作可以使用 `global`、`person`、`skin` 或 `sky` mask。`primary`、`white_balance` 和 `denoise` 可以生成逐帧轨迹；其他 Pool 默认镜头内静态。
+
+完整参数、范围和实现审计见：
+
+- [PoolGraph v2 技术报告](docs/poolgraph_v2_technical_report.zh-CN.pdf)
+- [技术报告 Markdown](docs/poolgraph_v2_technical_report.zh-CN.md)
+
+## 8. 检查输出确实是 PoolGraph v2
+
+运行后执行：
 
 ```bash
-cp configs/unified_vl.example.json configs/unified_vl.json
-export OPENAI_API_KEY="..."
+python - outputs/input.poolgraph.json <<'PY'
+import json
+import sys
+
+payload = json.load(open(sys.argv[1], encoding="utf-8"))
+assert payload["schema_version"] == "pool-grade-graph/v2"
+assert payload["operation_graph"]["schema_version"] == "video-edit-operation-graph/v2"
+print("schema:", payload["schema_version"])
+print("operations:", len(payload["operation_graph"]["operations"]))
+print("accepted:", payload["pool_metadata"]["globally_accepted"])
+PY
 ```
 
-The configuration uses `provider: "openai_responses"`, `/v1/responses`, ordered
-`input_image` items, native JSON output mode, and automatic retry for 429/5xx
-responses. It defaults to one shared `gpt-5.6-sol` client; change `model` in the
-JSON when using another image-capable Responses model. See the official
-[OpenAI vision guide](https://developers.openai.com/api/docs/guides/images-vision/)
-and [Responses API reference](https://developers.openai.com/api/reference/resources/responses/methods/create).
+如果 `globally_accepted` 为 `false` 且 operations 为空，通常表示 Hero/Anchor、安全指标或 VL review 未通过，事务回滚已经生效；这不是 JSON 写出失败。
 
-For Gemini's OpenAI-compatible endpoint, choose either the quota-conscious
-smoke-test configuration or the complete quality configuration:
+## 9. 常见问题
+
+### `Missing API key environment variable`
+
+当前 shell 没有对应变量，或配置中的 `api_key_env` 与导出的变量名不同：
 
 ```bash
-cp configs/unified_vl.gemini-free.json configs/unified_vl.json
-# or: cp configs/unified_vl.gemini-full.json configs/unified_vl.json
-export GEMINI_API_KEY="..."
+test -n "$OPENAI_API_KEY" && echo "OPENAI_API_KEY is set"
+test -n "$GEMINI_API_KEY" && echo "GEMINI_API_KEY is set"
 ```
 
-`gemini-free` keeps one editor stage, deterministic review, and one search
-evaluation to validate the full pipeline within a small request budget.
-`gemini-full` enables the three editor stages, MKL matching, visual review,
-tone-curve/HSL planning, and multi-round search. On multi-shot long videos the
-full configuration can exceed a free provider's per-minute or daily request
-quota; transport retries cannot bypass a daily quota.
+不要使用会把 Key 内容直接写进共享日志的检查命令。
 
-Run either provider with the same CLI contract:
+### HTTP 401/403
+
+检查 API Key、项目权限、模型权限，以及 `base_url` 是否与 provider 匹配。
+
+### HTTP 429
+
+达到每分钟或每日额度。客户端会按配置重试临时 429/5xx，但无法绕过每日额度。可先使用短视频、`--max-frames` 或低请求量配置。
+
+### VL 返回 JSON 校验失败
+
+PoolGraph 会拒绝未知 Pool、错误 stage、重复 Pool、未知字段、非法 mask、非有限数值和越界参数。错误会进入重试提示；超过 `maximum_planning_attempts` 后该 Anchor 失败，并可能触发事务回滚。
+
+### 输出视频没有音频
+
+默认 8-bit H.264 预览是静音视频。高位深 HEVC 路径会在源文件有音频时复制音频。
+
+### CUDA out of memory
+
+降低：
 
 ```bash
-python retouch_video.py \
-  --input input.mp4 \
-  --instruction "visible but controlled warm cinematic grade" \
-  --backend-config configs/unified_vl.json \
-  --output outputs/input.grade.json
+--render-batch-size 2 --render-max-side 1280
 ```
 
-The supplied runtime uses one shared client for storyboard, editor, and review
-roles.
-
-The storyboard path performs a sparse whole-video overview, a full-frame
-physical scan, overlapping 20-second VL windows, dense boundary adjudication,
-task-aware Anchor ranking inside every verified shot, then selects a global
-HeroAnchor. The editor first develops and approves the Hero look; all remaining
-Anchors receive both the Hero source and accepted Hero grade as their visual
-matching reference. Add
-`--allow-storyboard-fallback` only for physical shot-detection ablations.
-The output includes `operation_graph/v2` and a sanitized `backend_runtime`
-manifest. The VL colorist runs technical, look, selective-color, texture, and
-optical stages. Each response is sparse, validated against its Pool contract,
-rendered locally, reviewed, and committed transactionally. Primary, white
-balance, and denoise controls receive frame tracks from grading Anchors;
-HSL8, wheels, curves, global color, texture, and optical effects are normally
-shot-static. Grain parameters are static but the seeded grain realization
-changes deterministically with the absolute frame number.
-
-The older `--agent-config configs/photoagent_multi.json` path is retained for
-experiments that explicitly require MonetGPT, command tools, or competing
-editor pools.
-
-A fully local training-free baseline is available before configuring any model
-endpoint. It uses deterministic shot detection, the native parameter-search
-Editor, metric critics, and the same MCTS/rollback path:
+或使用：
 
 ```bash
-python retouch_video.py \
-  --input input.mp4 \
-  --instruction "natural brighter grade" \
-  --offline-native \
-  --output outputs/input.native.grade.json
+--render-device cpu
 ```
 
-See [`VIDEO_PIPELINE.md`](VIDEO_PIPELINE.md) for the data contract, rollback
-semantics, and the exact boundary between integrated and optional components.
-See [`evaluation/README.md`](evaluation/README.md) for controlled parameter
-probes and the paired SDSD video benchmark.
-The frozen five-track benchmark card is
-[`evaluation/BENCHMARK.md`](evaluation/BENCHMARK.md).
+## 10. 与 PoolGraph 直接相关的源码
 
-## Single-image retouching
+```text
+video_retouch/unified_backend.py       单 backend 构建与最终 manifest
+video_retouch/pool_pipeline.py         Hero/Anchor Pool 规划、review、rollback
+video_retouch/grade_pools.py           Pool 契约、参数校验、固定顺序、CPU executor
+video_retouch/pool_propagation.py      动态参数与时序扩散
+video_retouch/gpu_pool_executor.py     Torch CPU/CUDA batch executor
+video_retouch/semantic_masks.py        person/skin/sky mask 与跟踪
+video_retouch/color_managed_render.py  Log/HDR/ACES 高位深渲染
+video_retouch/tasks.py                 VL Pool grade/review prompt
+retouch_video.py                       命令行入口
+```
+
+运行 PoolGraph 回归测试：
 
 ```bash
-python retouch_image.py \
-  --input input.jpg \
-  --output outputs/retouched.jpg \
-  --instruction "make it brighter, warm, and cinematic"
+python -m unittest \
+  tests.test_grade_pools_v2 \
+  tests.test_unified_backend \
+  tests.test_color_managed_render
 ```
-
-Add a local grayscale mask:
-
-```bash
-python retouch_image.py \
-  --input input.jpg \
-  --mask person_mask.png \
-  --output outputs/retouched.jpg \
-  --instruction "brighten the person and use a restrained cinematic look"
-```
-
-## Directional quality gate and rollback
-
-Rollback is enabled by default. The input image is the transaction checkpoint,
-but identity is not treated as a preferred result. A candidate is committed
-when it produces a perceptible RGB change and moves closer to the planner's
-grading target than the input. Clipping and crushing metrics remain in the
-metadata for diagnosis, but they do not veto an artistic grade. Generic
-`retouch`, `修图`, and automatic-enhancement instructions receive a balanced
-default grade with highlight recovery, opened shadows, tonal separation, and
-restrained vibrance. An executor or third-party evaluator can still mark a
-numerically broken candidate invalid.
-
-The sidecar metadata contains `rolled_back`, `rollback_reason`, and a `decision`
-object with the perceptual delta, directional improvement, thresholds, and
-candidate counts for every gate.
-
-Require a larger score improvement before committing:
-
-```bash
-python retouch_image.py \
-  --input input.jpg \
-  --output outputs/retouched.jpg \
-  --instruction "warm cinematic portrait" \
-  --min-improvement 0.1
-```
-
-For ablations only, rollback can be disabled with `--no-rollback`.
-The visibility threshold can be tuned with `--min-perceptual-delta` (RGB RMS,
-default `0.01`). `--min-improvement` controls the minimum target-alignment gain.
-
-Each output image is accompanied by a JSON file containing the selected
-parameters, parameter covariance, plan, constraints, and evaluation metrics.
-
-## Bayesian/Langevin prototype
-
-```bash
-python -m bayesgrade.demo --frames 120 --budget 5
-python -m bayesgrade.demo_langevin --frames 120 --samples 16
-python -m bayesgrade.benchmark_synthetic --max-budget 5 --seeds 20
-```
-
-Python integration:
-
-```python
-from bayesgrade import BayesGradeRetouchPipeline
-
-result = BayesGradeRetouchPipeline().run(
-    frames,
-    instruction="warm cinematic portrait",
-    anchor_indices=[0],
-)
-
-print(result.parameter_mean.shape)  # [T, 12]
-print(result.next_anchor)
-```
-
-## Tests
-
-```bash
-python -m unittest discover -s tests
-```
-
-## Research documents
-
-- [`research/BAYESGRADE_RP.md`](research/BAYESGRADE_RP.md)
-- [`research/BAYESGRADE_EXPERIMENT_LOG.md`](research/BAYESGRADE_EXPERIMENT_LOG.md)
-- [`VIDEO_RETOUCH_AGENT_SURVEY.md`](VIDEO_RETOUCH_AGENT_SURVEY.md)
-- [`Video_Retouch_Agent_Survey.pptx`](Video_Retouch_Agent_Survey.pptx)
