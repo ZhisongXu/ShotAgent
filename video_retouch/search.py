@@ -12,11 +12,13 @@ import numpy as np
 from PIL import Image
 
 from retouch_agent import RetouchExecutor, RetouchParameters
+from retouch_agent.parameters import PARAMETER_LOWER_BOUNDS, PARAMETER_UPPER_BOUNDS
 
 from .backends import (
     AnchorGrade,
     AnchorRetouchBackend,
     HeroAnchorReference,
+    STYLE_STRENGTH_GUARDRAILS,
 )
 from .critic import ShotCritic, ShotCritique
 from .models import GradeAttempt, ShotPlan
@@ -53,6 +55,9 @@ class SearchOutcome:
     selected: Optional[SearchEvaluation]
     attempts: tuple[GradeAttempt, ...]
     memory: dict[str, object]
+
+
+CandidateGrid = dict[int, tuple[AnchorGrade, ...]]
 
 
 class AestheticMCTSSearch:
@@ -105,16 +110,21 @@ class AestheticMCTSSearch:
         backend: str,
         error: Exception,
     ) -> AnchorGrade:
+        parameters = RetouchParameters.from_mapping(
+            STYLE_STRENGTH_GUARDRAILS["preferred_defaults"], clamp=True
+        )
         return AnchorGrade(
             frame_index=frame_index,
-            parameters=RetouchParameters(),
-            preview=frame.copy(),
-            valid=False,
-            score=-1e6,
+            parameters=parameters,
+            preview=RetouchExecutor().apply(frame.convert("RGB"), parameters),
+            valid=True,
+            score=-0.25,
             backend=backend,
             metadata={
                 "shot_id": shot_id,
                 "error": f"{type(error).__name__}: {error}",
+                "fallback": "failed_anchor_assertive_floor",
+                "identity_fallback_disabled": True,
             },
         )
 
@@ -170,6 +180,235 @@ class AestheticMCTSSearch:
             proposals.append(grade)
         return tuple(proposals)
 
+    def _populate_candidate_grid(
+        self,
+        frames: Sequence[Image.Image],
+        instruction: str,
+        shot: ShotPlan,
+        frame_indices: tuple[int, ...],
+        candidate_grid: dict[int, tuple[AnchorGrade, ...]],
+        hero_reference: Optional[HeroAnchorReference] = None,
+    ) -> None:
+        missing = tuple(
+            frame_index
+            for frame_index in frame_indices
+            if frame_index not in candidate_grid
+        )
+        if not missing:
+            return
+        for frame_index in missing:
+            candidate_grid[frame_index] = tuple()
+        for backend in self.backends:
+            try:
+                if hero_reference is not None and callable(
+                    getattr(backend, "batch_grade_with_reference", None)
+                ):
+                    grades = backend.batch_grade_with_reference(
+                        frames,
+                        instruction,
+                        missing,
+                        shot.shot_id,
+                        hero_reference,
+                    )
+                elif hero_reference is None and callable(
+                    getattr(backend, "batch_grade", None)
+                ):
+                    grades = backend.batch_grade(
+                        frames,
+                        instruction,
+                        missing,
+                        shot.shot_id,
+                    )
+                else:
+                    proposed = []
+                    for frame_index in missing:
+                        if (
+                            hero_reference is not None
+                            and frame_index == hero_reference.frame_index
+                        ):
+                            grade = hero_reference.grade
+                        elif hero_reference is not None and callable(
+                            getattr(backend, "grade_with_reference", None)
+                        ):
+                            grade = backend.grade_with_reference(
+                                frames[frame_index],
+                                instruction,
+                                frame_index,
+                                shot.shot_id,
+                                hero_reference,
+                            )
+                        else:
+                            grade = backend.grade(
+                                frames[frame_index],
+                                instruction,
+                                frame_index,
+                                shot.shot_id,
+                            )
+                            if hero_reference is not None:
+                                grade = replace(
+                                    grade,
+                                    metadata={
+                                        **grade.metadata,
+                                        "hero_match_fallback": (
+                                            "backend_does_not_support_visual_reference"
+                                        ),
+                                        "requested_hero_frame": (
+                                            hero_reference.frame_index
+                                        ),
+                                    },
+                                )
+                        proposed.append(grade)
+                    grades = tuple(proposed)
+            except Exception as error:
+                grades = tuple(
+                    self._failed_grade(
+                        frames[frame_index],
+                        frame_index,
+                        shot.shot_id,
+                        backend.name,
+                        error,
+                    )
+                    for frame_index in missing
+                )
+            by_frame = {grade.frame_index: grade for grade in grades}
+            for frame_index in missing:
+                grade = by_frame.get(frame_index)
+                if grade is None:
+                    grade = self._failed_grade(
+                        frames[frame_index],
+                        frame_index,
+                        shot.shot_id,
+                        backend.name,
+                        RuntimeError("batch backend did not return this anchor"),
+                    )
+                candidate_grid[frame_index] = (*candidate_grid[frame_index], grade)
+
+    def prepopulate_storyboard_candidate_grid(
+        self,
+        frames: Sequence[Image.Image],
+        instruction: str,
+        shots: Sequence[ShotPlan],
+        hero_reference: HeroAnchorReference,
+        hero_candidate_grid: Optional[CandidateGrid] = None,
+    ) -> CandidateGrid:
+        grid: CandidateGrid = {}
+        anchor_shot_ids: dict[int, int] = {}
+        for shot in shots:
+            for frame_index in dict.fromkeys(sorted(shot.anchor_frames)):
+                anchor_shot_ids[int(frame_index)] = shot.shot_id
+        anchor_frames = tuple(sorted(anchor_shot_ids))
+        if not anchor_frames:
+            return grid
+        for frame_index in anchor_frames:
+            if frame_index == hero_reference.frame_index:
+                if hero_candidate_grid is not None:
+                    grid[frame_index] = hero_candidate_grid.get(
+                        frame_index, (hero_reference.grade,)
+                    )
+                else:
+                    grid[frame_index] = (hero_reference.grade,)
+            else:
+                grid[frame_index] = tuple()
+        missing = tuple(
+            frame_index
+            for frame_index in anchor_frames
+            if frame_index != hero_reference.frame_index
+        )
+        if not missing:
+            return grid
+        for backend in self.backends:
+            try:
+                if callable(getattr(backend, "batch_grade_storyboard", None)):
+                    grades = backend.batch_grade_storyboard(
+                        frames,
+                        instruction,
+                        missing,
+                        anchor_shot_ids,
+                        hero_reference,
+                    )
+                elif callable(getattr(backend, "batch_grade_with_reference", None)):
+                    grades = []
+                    for shot in shots:
+                        shot_indices = tuple(
+                            index
+                            for index in sorted(shot.anchor_frames)
+                            if index in missing
+                        )
+                        if not shot_indices:
+                            continue
+                        grades.extend(
+                            backend.batch_grade_with_reference(
+                                frames,
+                                instruction,
+                                shot_indices,
+                                shot.shot_id,
+                                hero_reference,
+                            )
+                        )
+                    grades = tuple(grades)
+                else:
+                    grades = []
+                    for frame_index in missing:
+                        shot_id = anchor_shot_ids[frame_index]
+                        if callable(getattr(backend, "grade_with_reference", None)):
+                            grades.append(
+                                backend.grade_with_reference(
+                                    frames[frame_index],
+                                    instruction,
+                                    frame_index,
+                                    shot_id,
+                                    hero_reference,
+                                )
+                            )
+                        else:
+                            grade = backend.grade(
+                                frames[frame_index],
+                                instruction,
+                                frame_index,
+                                shot_id,
+                            )
+                            grades.append(
+                                replace(
+                                    grade,
+                                    metadata={
+                                        **grade.metadata,
+                                        "hero_match_fallback": (
+                                            "backend_does_not_support_visual_reference"
+                                        ),
+                                        "requested_hero_frame": (
+                                            hero_reference.frame_index
+                                        ),
+                                    },
+                                )
+                            )
+                    grades = tuple(grades)
+            except Exception as error:
+                grades = tuple(
+                    self._failed_grade(
+                        frames[frame_index],
+                        frame_index,
+                        anchor_shot_ids[frame_index],
+                        backend.name,
+                        error,
+                    )
+                    for frame_index in missing
+                )
+            by_frame = {grade.frame_index: grade for grade in grades}
+            for frame_index in missing:
+                if frame_index == hero_reference.frame_index:
+                    continue
+                grade = by_frame.get(frame_index)
+                if grade is None:
+                    grade = self._failed_grade(
+                        frames[frame_index],
+                        frame_index,
+                        anchor_shot_ids[frame_index],
+                        backend.name,
+                        RuntimeError("storyboard batch backend omitted this anchor"),
+                    )
+                grid[frame_index] = (*grid[frame_index], grade)
+        return grid
+
     def propose_hero(
         self,
         frames: Sequence[Image.Image],
@@ -199,7 +438,7 @@ class AestheticMCTSSearch:
         instruction: str,
         frame_index: int,
         shot_id: int,
-    ) -> tuple[Optional[HeroAnchorReference], dict[str, object]]:
+    ) -> tuple[Optional[HeroAnchorReference], dict[str, object], CandidateGrid]:
         hero_shot = ShotPlan(
             shot_id=shot_id,
             start_frame=frame_index,
@@ -235,6 +474,11 @@ class AestheticMCTSSearch:
             if accepted
             else None
         )
+        if selected is None and evaluations:
+            selected = max(
+                evaluations,
+                key=lambda item: (item.reward, item.critique.score),
+            )
         audit = {
             "hero_frame": frame_index,
             "hero_shot_id": shot_id,
@@ -253,10 +497,11 @@ class AestheticMCTSSearch:
             "selected_backend": (
                 None if selected is None else selected.grades[0].backend
             ),
-            "accepted": selected is not None,
+            "accepted": selected is not None and selected.critique.accepted,
+            "committed_as_reference": selected is not None,
         }
         if selected is None:
-            return None, audit
+            return None, audit, candidate_grid
         return (
             HeroAnchorReference(
                 frame_index=frame_index,
@@ -265,6 +510,7 @@ class AestheticMCTSSearch:
                 grade=selected.grades[0],
             ),
             audit,
+            candidate_grid,
         )
 
     def _render(
@@ -275,6 +521,123 @@ class AestheticMCTSSearch:
         return tuple(
             self.executor.apply(frame, RetouchParameters.from_vector(values))
             for frame, values in zip(frames, parameters)
+        )
+
+    @staticmethod
+    def _strength_feedback_factor(critique: ShotCritique) -> float:
+        text = " ".join(critique.reasons).lower()
+        if any(
+            phrase in text
+            for phrase in (
+                "no visible difference",
+                "virtually no visible difference",
+                "not visible",
+                "too subtle",
+                "not strong",
+                "not enough",
+                "failing the requested strong",
+            )
+        ):
+            return 1.25
+        return 1.12
+
+    def _amplify_evaluation(
+        self,
+        frames: Sequence[Image.Image],
+        instruction: str,
+        shot: ShotPlan,
+        evaluation: SearchEvaluation,
+        factor: float,
+        hero_reference: Optional[HeroAnchorReference] = None,
+    ) -> SearchEvaluation:
+        def amplify(values: np.ndarray) -> np.ndarray:
+            upper = np.minimum(PARAMETER_UPPER_BOUNDS, 0.48)
+            lower = np.maximum(PARAMETER_LOWER_BOUNDS, -0.48)
+            upper[0] = min(PARAMETER_UPPER_BOUNDS[0], 0.65)
+            lower[0] = max(PARAMETER_LOWER_BOUNDS[0], -0.65)
+            upper[9] = min(PARAMETER_UPPER_BOUNDS[9], 0.55)
+            lower[9] = max(PARAMETER_LOWER_BOUNDS[9], -0.55)
+            return np.clip(
+                np.asarray(values, dtype=np.float64) * factor,
+                lower,
+                upper,
+            )
+
+        amplified_grades = tuple(
+            replace(
+                grade,
+                parameters=RetouchParameters.from_vector(
+                    amplify(grade.parameters.to_vector()), clamp=True
+                ),
+                preview=self.executor.apply(
+                    frames[grade.frame_index],
+                    RetouchParameters.from_vector(
+                        amplify(grade.parameters.to_vector()), clamp=True
+                    ),
+                ),
+                score=max(float(grade.score), float(evaluation.critique.score)),
+                valid=True,
+                metadata={
+                    **grade.metadata,
+                    "critic_feedback_amplified": True,
+                    "feedback_factor": factor,
+                    "feedback_source": list(evaluation.critique.reasons),
+                },
+            )
+            for grade in evaluation.grades
+        )
+        diffused = self.diffuser.diffuse(frames, shot, amplified_grades)
+        source = frames[shot.start_frame : shot.end_frame + 1]
+        output = self._render(source, diffused.frame_parameters)
+        critic_arguments = (
+            source,
+            output,
+            diffused.frame_parameters,
+            diffused.frame_uncertainty,
+            shot,
+            instruction,
+            amplified_grades,
+        )
+        if "hero_reference" in inspect.signature(
+            self.critic.evaluate
+        ).parameters:
+            critique = self.critic.evaluate(
+                *critic_arguments, hero_reference=hero_reference
+            )
+        else:
+            critique = self.critic.evaluate(*critic_arguments)
+        critique = replace(
+            critique,
+            reasons=(
+                *critique.reasons,
+                f"critic_feedback_amplified_by_{factor:.2f}x",
+            ),
+            metadata={
+                **critique.metadata,
+                "critic_feedback_amplified": True,
+                "feedback_factor": factor,
+                "previous_reasons": list(evaluation.critique.reasons),
+            },
+        )
+        reward = float(
+            np.clip(
+                (
+                    critique.score
+                    if critique.accepted
+                    else critique.score - self.rejection_penalty * 0.25
+                ),
+                -1.0,
+                1.0,
+            )
+        )
+        return SearchEvaluation(
+            anchor_indices=evaluation.anchor_indices,
+            choices=evaluation.choices,
+            grades=amplified_grades,
+            diffused=diffused,
+            critique=critique,
+            reward=reward,
+            round_index=evaluation.round_index,
         )
 
     def _evaluate(
@@ -380,11 +743,12 @@ class AestheticMCTSSearch:
         instruction: str,
         shot: ShotPlan,
         hero_reference: Optional[HeroAnchorReference] = None,
+        candidate_grid: Optional[CandidateGrid] = None,
     ) -> SearchOutcome:
         anchor_indices = list(dict.fromkeys(sorted(shot.anchor_frames)))
         if len(anchor_indices) > self.maximum_anchors:
             anchor_indices = anchor_indices[: self.maximum_anchors]
-        candidate_grid: dict[int, tuple[AnchorGrade, ...]] = {}
+        candidate_grid = {} if candidate_grid is None else candidate_grid
         evaluations: dict[tuple[tuple[int, ...], tuple[int, ...]], SearchEvaluation] = (
             {}
         )
@@ -397,15 +761,14 @@ class AestheticMCTSSearch:
         while simulations < self.maximum_evaluations:
             round_index += 1
             anchors = tuple(sorted(anchor_indices))
-            for frame_index in anchors:
-                if frame_index not in candidate_grid:
-                    candidate_grid[frame_index] = self._propose(
-                        frames,
-                        instruction,
-                        shot,
-                        frame_index,
-                        hero_reference,
-                    )
+            self._populate_candidate_grid(
+                frames,
+                instruction,
+                shot,
+                anchors,
+                candidate_grid,
+                hero_reference,
+            )
             action_count = len(self.backends)
             combination_count = action_count ** len(anchors)
             root = _Node(choices=())
@@ -539,6 +902,52 @@ class AestheticMCTSSearch:
                     None,
                 )
             if next_anchor is None:
+                amplified = self._amplify_evaluation(
+                    frames,
+                    instruction,
+                    shot,
+                    best_rejected,
+                    self._strength_feedback_factor(best_rejected.critique),
+                    hero_reference,
+                )
+                evaluations[(anchors, (*best_rejected.choices, simulations))] = amplified
+                attempts.append(
+                    GradeAttempt(
+                        attempt=len(attempts) + 1,
+                        anchor_frames=anchors,
+                        score=amplified.critique.score,
+                        accepted=amplified.critique.accepted,
+                        metrics=amplified.critique.metrics,
+                        reasons=amplified.critique.reasons,
+                        recommended_anchor=amplified.critique.recommended_anchor,
+                        metadata={
+                            **amplified.critique.metadata,
+                            "positive_rollback_feedback": True,
+                            "source_attempt": len(attempts),
+                        },
+                    )
+                )
+                if amplified.critique.accepted:
+                    return SearchOutcome(
+                        selected=amplified,
+                        attempts=tuple(attempts),
+                        memory=self._memory(
+                            candidate_grid,
+                            evaluations,
+                            rounds,
+                            amplified,
+                            False,
+                            hero_reference,
+                        ),
+                    )
+                rounds[-1].update(
+                    {
+                        "rolled_back": True,
+                        "rollback_reasons": list(amplified.critique.reasons),
+                        "anchor_action": "amplify",
+                        "positive_rollback_feedback": True,
+                    }
+                )
                 break
             previous_anchors = tuple(sorted(anchor_indices))
             # A rejected round is transactional: discard its trajectory and
@@ -565,15 +974,20 @@ class AestheticMCTSSearch:
                 }
             )
 
+        best_unaccepted = (
+            max(evaluations.values(), key=lambda value: (value.reward, value.critique.score))
+            if evaluations
+            else None
+        )
         return SearchOutcome(
-            selected=None,
+            selected=best_unaccepted,
             attempts=tuple(attempts),
             memory=self._memory(
                 candidate_grid,
                 evaluations,
                 rounds,
-                None,
-                True,
+                best_unaccepted,
+                best_unaccepted is not None,
                 hero_reference,
             ),
         )

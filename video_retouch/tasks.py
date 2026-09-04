@@ -28,6 +28,17 @@ schema. Never synthesize pixels; plan editable operations or judge previews
 produced by deterministic tools.
 """.strip()
 
+ASSERTIVE_GRADE_CONTRACT = """
+Choose the grade strength yourself like a careful colorist: visible enough that
+the before/after is clear, but not pushed into distortion, clipping, crushed
+shadows, plastic skin, neon foliage, or broken scene mood. Avoid timid near-zero
+micro-adjustments. For cinematic or stylized requests, most key style moves
+should usually land around 0.10-0.35 in magnitude; only use 0.35-0.45 when the
+shot clearly benefits from a stronger fantasy/commercial look. Preserve
+highlight texture and believable colors by balancing stronger style with
+protection, not by collapsing the look back toward zero.
+""".strip()
+
 
 def parameter_contract() -> str:
     schema = {
@@ -37,6 +48,27 @@ def parameter_contract() -> str:
         )
     }
     return json.dumps(schema, ensure_ascii=False)
+
+
+def single_api_grade_prompt(instruction: str, frame_count: int, fps: float) -> str:
+    duration = frame_count / fps
+    return f"""
+<TASK_SINGLE_API_GRADE>
+Inspect sparse frames sampled across the full video and choose one conservative
+global color-grade parameter set to apply to the entire video. Prioritize a
+natural warm cinematic landscape look, protected highlights, realistic foliage,
+stable neutral balance, and no local masks.
+
+Video: {frame_count} frames, {fps:.6f} fps, {duration:.3f} seconds.
+Color-grading instruction: {instruction}
+Valid parameter ranges: {parameter_contract()}
+
+Return JSON only:
+{{"diagnosis":"...","parameters":{{"exposure":0.0,"temperature":0.0,
+"tint":0.0,"contrast":0.0,"highlights":0.0,"shadows":0.0,
+"saturation":0.0,"vibrance":0.0,"tone_curve":0.0,"local_exposure":0.0,
+"local_temperature":0.0,"local_saturation":0.0}},"confidence":0.0}}
+""".strip()
 
 
 def storyboard_prompt(
@@ -161,6 +193,11 @@ unoccluded, and representative of the shot's subjects, illumination, exposure,
 white balance, highlight/shadow range, and important skin tones. When more
 than one Anchor is requested, choose complementary lighting or composition
 states rather than near-duplicates. Do not choose merely the temporal middle.
+For a single-Anchor shot, prefer the most typical/medoid content and exposure
+over a dramatic outlier; avoid black frames, flash frames, heavy motion blur,
+occlusions, transitional dissolves, and frames whose color cast is not shared by
+the rest of the shot. If the shot contains multiple distinct content states,
+choose the Anchor that best protects the dominant subject and lighting.
 
 Video fps: {fps:.6f}
 Color-grading instruction: {instruction}
@@ -209,19 +246,27 @@ def anchor_grade_prompt(
     stage: str,
     current_parameters: dict[str, float],
 ) -> str:
+    stage_instruction = (
+        "At stage \"global_grade\", choose all relevant global parameters in one "
+        "pass across exposure, white balance, contrast, highlights, shadows, "
+        "saturation, vibrance, and tone curve."
+        if stage == "global_grade"
+        else f'At stage "{stage}", propose conservative parameter_updates'
+    )
     return f"""
 {ANCHOR_GRADE_TASK}
 Act as the operation-aware Anchor grading role. Compare the source and current
-preview. At stage "{stage}", propose conservative parameter_updates that move
-the preview toward the instruction while preserving identity, texture, skin,
-highlights, and shadows. Updates are absolute adjustments added to the current
-parameter state; omit unrelated parameters.
+preview. {stage_instruction} that move the preview toward the instruction
+while preserving identity, texture, skin, highlights, and shadows. Updates are
+absolute adjustments added to the current parameter state; omit unrelated
+parameters.
 
 Instruction: {instruction}
 Current parameters: {json.dumps(current_parameters, ensure_ascii=False)}
 Valid parameter ranges: {parameter_contract()}
 No local mask is available in the video Anchor path. Do not update
 local_exposure, local_temperature, or local_saturation.
+Strength contract: {ASSERTIVE_GRADE_CONTRACT}
 
 Return JSON only:
 {{"diagnosis":{{"issues":["..."]}},"parameter_updates":{{"exposure":0.1}},
@@ -237,6 +282,13 @@ def anchor_match_prompt(
     hero_shot_id: int,
     mkl_prior: dict[str, object] | None = None,
 ) -> str:
+    stage_instruction = (
+        "At stage \"global_grade\", choose all relevant global matching "
+        "parameters in one pass across exposure, white balance, contrast, "
+        "highlights, shadows, saturation, vibrance, and tone curve."
+        if stage == "global_grade"
+        else f'At stage "{stage}", propose conservative parameter_updates'
+    )
     mkl_contract = (
         "No distribution-transfer proposal is supplied."
         if mkl_prior is None
@@ -257,13 +309,13 @@ mkl_weight in [0,1]. Also return semantic_correspondences and protected_regions.
 {ANCHOR_MATCH_TASK}
 Act as the operation-aware shot-matching role. The inputs contain the original
 HeroAnchor, its accepted graded version, the current shot Anchor source, and
-the current shot Anchor preview. At stage "{stage}", propose conservative
-parameter_updates for the current shot Anchor so it belongs to the HeroAnchor's
-accepted visual world while preserving the current shot's physically different
-exposure, time of day, skin, local contrast, and narrative intent. Match look
-characteristics (neutral axis, contrast curve, saturation hierarchy, highlight
-roll-off, shadow color, and subject treatment); do not force raw pixel or
-histogram equality and do not copy content.
+the current shot Anchor preview. {stage_instruction} for the current shot
+Anchor so it belongs to the HeroAnchor's accepted visual world while preserving
+the current shot's physically different exposure, time of day, skin, local
+contrast, and narrative intent. Match look characteristics (neutral axis,
+contrast curve, saturation hierarchy, highlight roll-off, shadow color, and
+subject treatment); do not force raw pixel or histogram equality and do not copy
+content.
 
 HeroAnchor: frame {hero_frame}, shot {hero_shot_id}
 Instruction: {instruction}
@@ -272,6 +324,7 @@ Valid parameter ranges: {parameter_contract()}
 No local mask is available. Do not update local_exposure, local_temperature,
 or local_saturation.
 Distribution-prior contract: {mkl_contract}
+Strength contract: {ASSERTIVE_GRADE_CONTRACT}
 
 Return JSON only:
 {{"diagnosis":{{"match_gaps":["..."]}},
@@ -279,6 +332,93 @@ Return JSON only:
 "semantic_correspondences":[{{"hero":"sky","target":"sky"}}],
 "protected_regions":["skin"],"mkl_decision":"attenuate",
 "mkl_weight":0.5,"confidence":0.0}}
+""".strip()
+
+
+def batch_anchor_grade_prompt(
+    instruction: str,
+    stages: tuple[str, ...],
+    current_parameters: dict[int, dict[str, float]],
+    shot_id: int,
+    hero_frame: int | None = None,
+    hero_shot_id: int | None = None,
+) -> str:
+    mode = (
+        "Match each target Anchor to the supplied HeroAnchor look while "
+        "preserving physical differences between shots."
+        if hero_frame is not None
+        else "Choose a conservative standalone grade for each Anchor."
+    )
+    hero = (
+        ""
+        if hero_frame is None
+        else f"HeroAnchor: frame {hero_frame}, shot {hero_shot_id}\n"
+    )
+    return f"""
+{ANCHOR_GRADE_TASK}
+Batch Anchor grading request for shot {shot_id}. {mode}
+Run the whole editor pool internally for every target Anchor in this single
+response. Pool stages: {json.dumps(list(stages), ensure_ascii=False)}.
+For each Anchor, return one final cumulative parameter_updates object plus a
+stages audit describing the pool behavior. Use each image label's frame_id.
+Keep local_exposure, local_temperature, and local_saturation at 0 because no
+local mask is available.
+
+{hero}Instruction: {instruction}
+Current parameters by frame:
+{json.dumps(current_parameters, ensure_ascii=False)}
+Valid parameter ranges: {parameter_contract()}
+Strength contract: {ASSERTIVE_GRADE_CONTRACT}
+
+Return JSON only:
+{{"anchors":[{{"frame":12,"diagnosis":{{"issues":["..."]}},
+"parameter_updates":{{"exposure":0.1,"temperature":0.05}},
+"stages":[{{"stage":"lighting","updates":{{"exposure":0.1}},
+"reason":"..."}}],
+"constraints":["..."],"confidence":0.0}}]}}
+""".strip()
+
+
+def batch_storyboard_anchor_grade_prompt(
+    instruction: str,
+    stages: tuple[str, ...],
+    frame_to_shot: dict[int, int],
+    current_parameters: dict[int, dict[str, float]],
+    hero_frame: int,
+    hero_shot_id: int,
+) -> str:
+    return f"""
+{ANCHOR_GRADE_TASK}
+Global storyboard Anchor grading request. All target Anchors from multiple
+shots are supplied together so the editor pool can keep a coherent whole-video
+look. Compare every target Anchor against the HeroAnchor reference and against
+the other target Anchors before choosing parameters.
+
+Run the whole editor pool internally for every target Anchor in this single
+response. Pool stages: {json.dumps(list(stages), ensure_ascii=False)}.
+For each Anchor, return one final cumulative parameter_updates object plus a
+stages audit describing lighting, white balance/color, tone, and cross-shot
+consistency decisions. Use each image label's frame_id.
+
+HeroAnchor: frame {hero_frame}, shot {hero_shot_id}
+Frame to shot map: {json.dumps(frame_to_shot, ensure_ascii=False)}
+Instruction: {instruction}
+Current parameters by frame:
+{json.dumps(current_parameters, ensure_ascii=False)}
+Valid parameter ranges: {parameter_contract()}
+No local mask is available. Do not update local_exposure, local_temperature,
+or local_saturation.
+Strength contract: {ASSERTIVE_GRADE_CONTRACT}
+
+Return JSON only:
+{{"anchors":[{{"frame":12,"shot_id":0,
+"diagnosis":{{"issues":["..."],"cross_shot_notes":["..."]}},
+"parameter_updates":{{"exposure":0.1,"temperature":0.05}},
+"stages":[{{"stage":"lighting","updates":{{"exposure":0.1}},
+"reason":"..."}}],
+"constraints":["..."],"semantic_correspondences":[{{"hero":"sky",
+"target":"sky"}}],"protected_regions":["highlights"],
+"mkl_decision":"reject","mkl_weight":0.0,"confidence":0.0}}]}}
 """.strip()
 
 

@@ -34,6 +34,7 @@ def decode_video(
     path: Path,
     max_frames: Optional[int] = None,
     max_side: Optional[int] = None,
+    target_fps: Optional[float] = None,
 ) -> DecodedVideo:
     path = Path(path)
     if not path.is_file():
@@ -47,6 +48,15 @@ def decode_video(
     if fps <= 0 or width <= 0 or height <= 0:
         capture.release()
         raise RuntimeError("Video has invalid FPS or dimensions.")
+    frame_stride = 1
+    output_fps = fps
+    if target_fps is not None:
+        if target_fps <= 0:
+            capture.release()
+            raise ValueError("target_fps must be positive.")
+        if target_fps < fps:
+            frame_stride = max(1, round(fps / target_fps))
+            output_fps = fps / frame_stride
     if max_side is not None:
         if max_side < 64:
             capture.release()
@@ -55,9 +65,16 @@ def decode_video(
         width = max(1, round(width * scale))
         height = max(1, round(height * scale))
     frames: list[Image.Image] = []
+    source_index = 0
     try:
         while max_frames is None or len(frames) < max_frames:
+            if source_index % frame_stride != 0:
+                if not capture.grab():
+                    break
+                source_index += 1
+                continue
             success, bgr = capture.read()
+            source_index += 1
             if not success:
                 break
             if bgr.shape[1] != width or bgr.shape[0] != height:
@@ -70,7 +87,7 @@ def decode_video(
         raise RuntimeError(f"Video contains no decodable frames: {path}")
     return DecodedVideo(
         frames=tuple(frames),
-        fps=fps,
+        fps=output_fps,
         width=width,
         height=height,
         source=path.resolve(),
@@ -83,6 +100,7 @@ def encode_video(
     fps: float,
     *,
     codec: Optional[str] = None,
+    preset: str = "medium",
 ) -> Path:
     """Encode ordered RGB frames as a silent video artifact.
 
@@ -123,7 +141,7 @@ def encode_video(
             codec="libx264",
             macro_block_size=2,
             ffmpeg_log_level="warning",
-            output_params=["-preset", "medium", "-movflags", "+faststart"],
+            output_params=["-preset", preset, "-movflags", "+faststart"],
         )
         writer.send(None)
         try:

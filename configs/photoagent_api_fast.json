@@ -1,0 +1,71 @@
+{
+  "storyboard": {
+    "provider": "openai_responses",
+    "base_url": "https://api.openai.com/v1",
+    "model": "gpt-5.6-sol",
+    "api_key_env": "OPENAI_API_KEY",
+    "reasoning_effort": "low",
+    "image_detail": "low",
+    "max_output_tokens": 4096,
+    "max_image_side": 640,
+    "long_video": {
+      "overview_frames": 12,
+      "window_seconds": 30.0,
+      "overlap_seconds": 2.0,
+      "max_window_images": 12,
+      "technical_candidate_threshold": 0.14,
+      "hard_cut_threshold": 0.42,
+      "boundary_context_frames": 2,
+      "boundary_batch_size": 8,
+      "boundary_merge_tolerance_seconds": 0.2,
+      "boundary_accept_confidence": 0.55,
+      "anchor_candidates_per_shot": 4,
+      "anchor_shots_per_call": 6,
+      "max_anchor_images_per_call": 24,
+      "hero_max_images_per_call": 16,
+      "hero_nominees_per_batch": 2,
+      "hero_candidate_count": 3,
+      "minimum_shot_seconds": 0.4
+    }
+  },
+  "editors": [
+    {
+      "name": "cinematic-grade-editor",
+      "type": "vision_model",
+      "provider": "openai_responses",
+      "base_url": "https://api.openai.com/v1",
+      "model": "gpt-5.6-sol",
+      "api_key_env": "OPENAI_API_KEY",
+      "reasoning_effort": "low",
+      "image_detail": "high",
+      "stages": ["lighting", "white_balance_and_color", "tone"],
+      "use_mkl_prior": true,
+      "mkl_strength": 0.35,
+      "mkl_projection_iterations": 20,
+      "max_output_tokens": 1536
+    }
+  ],
+  "evaluators": [
+    {
+      "name": "api-grade-critic",
+      "type": "vision_model",
+      "provider": "openai_responses",
+      "base_url": "https://api.openai.com/v1",
+      "model": "gpt-5.6-sol",
+      "api_key_env": "OPENAI_API_KEY",
+      "reasoning_effort": "low",
+      "image_detail": "high",
+      "focus": "instruction adherence, natural cinematic color, highlight preservation, and cross-shot visual coherence",
+      "weight": 1.0,
+      "veto": false
+    }
+  ],
+  "acceptance_score": 0.55,
+  "search": {
+    "maximum_evaluations": 4,
+    "maximum_hero_attempts": 1,
+    "exploration_constant": 1.0,
+    "rejection_penalty": 0.25,
+    "seed": 7
+  }
+}

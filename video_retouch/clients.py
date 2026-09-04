@@ -6,6 +6,7 @@ import base64
 import io
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from typing import Protocol, Sequence
@@ -13,6 +14,16 @@ from typing import Protocol, Sequence
 from PIL import Image
 
 from .tasks import AGENT_SYSTEM_PROMPT
+
+
+def _progress(message: str) -> None:
+    print(f"[progress] {message}", flush=True)
+
+
+class VisionJSONDecodeError(ValueError):
+    def __init__(self, message: str, candidate: str) -> None:
+        super().__init__(message)
+        self.candidate = candidate
 
 
 class VisionLanguageClient(Protocol):
@@ -27,9 +38,25 @@ class VisionLanguageClient(Protocol):
 
 def extract_json_object(text: str) -> dict[str, object]:
     start, end = text.find("{"), text.rfind("}")
-    if start < 0 or end <= start:
+    if start < 0:
         raise ValueError(f"Vision model response did not contain JSON: {text[:240]}")
-    payload = json.loads(text[start : end + 1])
+    if end <= start:
+        raise VisionJSONDecodeError(
+            f"Vision model response contained incomplete JSON: {text[:240]}",
+            text[start:],
+        )
+    candidate = text[start : end + 1]
+    try:
+        payload = json.loads(candidate)
+    except json.JSONDecodeError as error:
+        excerpt_start = max(0, error.pos - 160)
+        excerpt_end = min(len(candidate), error.pos + 160)
+        excerpt = candidate[excerpt_start:excerpt_end]
+        raise VisionJSONDecodeError(
+            "Vision model response contained invalid JSON "
+            f"near character {error.pos}: {excerpt}",
+            candidate,
+        ) from error
     if not isinstance(payload, dict):
         raise ValueError("Vision model JSON response must be an object.")
     return payload
@@ -109,6 +136,7 @@ class OpenAICompatibleVisionClient:
                 ],
                 "temperature": 0,
                 "max_tokens": self.max_tokens,
+                "response_format": {"type": "json_object"},
             }
         ).encode("utf-8")
         request = urllib.request.Request(
@@ -119,6 +147,10 @@ class OpenAICompatibleVisionClient:
                 "Content-Type": "application/json",
             },
             method="POST",
+        )
+        started = time.monotonic()
+        _progress(
+            f"calling chat model={self.model_id} images={len(labeled_images)}"
         )
         try:
             with urllib.request.urlopen(
@@ -144,6 +176,9 @@ class OpenAICompatibleVisionClient:
             )
         if not isinstance(text, str) or not text:
             raise ValueError("Vision endpoint response content must be text.")
+        _progress(
+            f"chat model={self.model_id} finished in {time.monotonic() - started:.1f}s"
+        )
         return extract_json_object(text)
 
 
@@ -213,6 +248,90 @@ class OpenAIResponsesVisionClient(OpenAICompatibleVisionClient):
             raise ValueError("Responses API response did not contain output text.")
         return text
 
+    def _post_responses(
+        self,
+        api_key: str,
+        request_payload: dict[str, object],
+        *,
+        label: str,
+        images: int,
+    ) -> dict[str, object]:
+        body = json.dumps(request_payload).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.base_url}/responses",
+            data=body,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        for attempt in range(3):
+            started = time.monotonic()
+            _progress(
+                f"calling {label} model={self.model_id} "
+                f"reasoning={self.reasoning_effort} detail={self.image_detail} "
+                f"images={images} attempt={attempt + 1}/3"
+            )
+            try:
+                with urllib.request.urlopen(
+                    request, timeout=self.timeout_seconds
+                ) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                _progress(
+                    f"{label} model={self.model_id} finished in "
+                    f"{time.monotonic() - started:.1f}s"
+                )
+                return payload
+            except urllib.error.HTTPError as error:
+                detail = error.read().decode("utf-8", errors="replace")[-2000:]
+                if error.code != 429 and error.code < 500:
+                    raise RuntimeError(
+                        f"Responses API returned HTTP {error.code}: {detail}"
+                    ) from error
+                if attempt == 2:
+                    raise RuntimeError(
+                        f"Responses API returned HTTP {error.code} after "
+                        f"3 attempts: {detail}"
+                    ) from error
+                retry_after = error.headers.get("Retry-After")
+                delay = float(retry_after) if retry_after else 2.0**attempt
+                _progress(
+                    f"responses HTTP {error.code}; retrying after {delay:.1f}s"
+                )
+                time.sleep(min(max(delay, 0.0), 30.0))
+        raise RuntimeError("Responses API retry loop exited unexpectedly.")
+
+    def _repair_json(self, api_key: str, broken_json: str) -> dict[str, object]:
+        _progress("repairing invalid JSON with text-only Responses request")
+        repair_prompt = (
+            "Repair this malformed JSON into one valid JSON object. Preserve all "
+            "keys, arrays, numbers, booleans, and strings as much as possible. "
+            "Do not add explanation. Return JSON only.\n\n"
+            f"{broken_json}"
+        )
+        request_payload: dict[str, object] = {
+            "model": self.model_id,
+            "instructions": "You repair malformed JSON for a video pipeline.",
+            "input": [
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": repair_prompt}],
+                }
+            ],
+            "max_output_tokens": max(self.max_tokens, 4096),
+            "text": {"format": {"type": "json_object"}},
+        }
+        if self.reasoning_effort != "none":
+            request_payload["reasoning"] = {"effort": self.reasoning_effort}
+        payload = self._post_responses(
+            api_key,
+            request_payload,
+            label="responses-json-repair",
+            images=0,
+        )
+        return extract_json_object(self._response_text(payload))
+
     def generate_json(
         self,
         labeled_images: Sequence[tuple[str, Image.Image]],
@@ -240,27 +359,18 @@ class OpenAIResponsesVisionClient(OpenAICompatibleVisionClient):
             "instructions": AGENT_SYSTEM_PROMPT,
             "input": [{"role": "user", "content": content}],
             "max_output_tokens": self.max_tokens,
+            "text": {"format": {"type": "json_object"}},
         }
         if self.reasoning_effort != "none":
             request_payload["reasoning"] = {"effort": self.reasoning_effort}
-        body = json.dumps(request_payload).encode("utf-8")
-        request = urllib.request.Request(
-            f"{self.base_url}/responses",
-            data=body,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
+        payload = self._post_responses(
+            api_key,
+            request_payload,
+            label="responses",
+            images=len(labeled_images),
         )
+        text = self._response_text(payload)
         try:
-            with urllib.request.urlopen(
-                request, timeout=self.timeout_seconds
-            ) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as error:
-            detail = error.read().decode("utf-8", errors="replace")[-2000:]
-            raise RuntimeError(
-                f"Responses API returned HTTP {error.code}: {detail}"
-            ) from error
-        return extract_json_object(self._response_text(payload))
+            return extract_json_object(text)
+        except VisionJSONDecodeError as error:
+            return self._repair_json(api_key, error.candidate)

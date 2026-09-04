@@ -9,8 +9,10 @@ import numpy as np
 from PIL import Image
 
 from retouch_agent import RetouchExecutor
+from retouch_agent.planner import image_statistics
 
 from .backends import (
+    AnchorGrade,
     AnchorRetouchBackend,
     HeroAnchorReference,
     NativeRetouchBackend,
@@ -85,12 +87,14 @@ class DynamicGradePipeline:
         instruction: str,
         shot: ShotPlan,
         hero_reference: HeroAnchorReference,
+        candidate_grid: Optional[dict[int, tuple[AnchorGrade, ...]]] = None,
     ) -> ShotGrade:
         outcome = self.search.search(
             frames,
             instruction,
             shot,
             hero_reference=hero_reference,
+            candidate_grid=candidate_grid,
         )
         shot_length = shot.end_frame - shot.start_frame + 1
         if outcome.selected is None:
@@ -138,9 +142,13 @@ class DynamicGradePipeline:
             parameter_keyframes=selected.diffused.keyframes,
             frame_parameters=selected.diffused.frame_parameters,
             confidence=float(selected.critique.score),
-            accepted=True,
-            rolled_back=False,
-            rollback_reason=None,
+            accepted=bool(selected.critique.accepted),
+            rolled_back=not bool(selected.critique.accepted),
+            rollback_reason=(
+                None
+                if selected.critique.accepted
+                else ",".join(selected.critique.reasons) or "critic_rejected_kept_grade"
+            ),
             attempts=outcome.attempts,
             search_memory=outcome.memory,
         )
@@ -172,6 +180,76 @@ class DynamicGradePipeline:
                 "reason": reason,
             },
         )
+
+    @staticmethod
+    def _shot_content_signature(
+        frames: Sequence[Image.Image], shot: ShotPlan
+    ) -> np.ndarray:
+        anchor = int(shot.anchor_frames[0])
+        stats = image_statistics(frames[anchor])
+        return np.asarray(
+            [
+                stats["luminance"],
+                stats["contrast"],
+                stats["saturation"],
+                stats["warmth"],
+            ],
+            dtype=np.float64,
+        )
+
+    @classmethod
+    def _content_groups(
+        cls, frames: Sequence[Image.Image], shots: Sequence[ShotPlan]
+    ) -> list[tuple[str, tuple[ShotPlan, ...]]]:
+        buckets: dict[str, list[ShotPlan]] = {}
+        for shot in shots:
+            luminance, contrast, saturation, warmth = cls._shot_content_signature(
+                frames, shot
+            )
+            if luminance < 0.22:
+                label = "dark_low_key"
+            elif luminance > 0.58 and saturation < 0.20:
+                label = "bright_snow_fog"
+            elif warmth > 0.06:
+                label = "warm_fire_skin"
+            elif saturation > 0.26:
+                label = "colorful_daylight"
+            else:
+                label = "neutral_cool"
+            buckets.setdefault(label, []).append(shot)
+        return [
+            (label, tuple(group))
+            for label, group in buckets.items()
+            if group
+        ]
+
+    @classmethod
+    def _rank_group_hero_candidates(
+        cls, frames: Sequence[Image.Image], shots: Sequence[ShotPlan]
+    ) -> list[int]:
+        candidates = [
+            int(frame)
+            for shot in shots
+            for frame in shot.anchor_frames
+        ]
+        if not candidates:
+            return []
+        signatures = np.stack(
+            [
+                cls._shot_content_signature(
+                    frames,
+                    replace(shot, anchor_frames=(int(frame),)),
+                )
+                for shot in shots
+                for frame in shot.anchor_frames
+            ],
+            axis=0,
+        )
+        center = np.median(signatures, axis=0)
+        distance = np.linalg.norm(signatures - center[None, :], axis=1)
+        quality = -distance - 0.35 * np.abs(signatures[:, 0] - 0.45)
+        order = np.argsort(-quality, kind="stable")
+        return [candidates[int(index)] for index in order]
 
     def run(
         self,
@@ -206,6 +284,123 @@ class DynamicGradePipeline:
             ]
         hero_candidates = list(dict.fromkeys(hero_candidates))
 
+        content_groups = self._content_groups(normalized, storyboard.shots)
+        if len(content_groups) > 1:
+            grouped_grades: list[ShotGrade] = []
+            grouped_attempts: list[dict[str, object]] = []
+            primary_reference: Optional[HeroAnchorReference] = None
+            ranked_all_heroes: list[int] = []
+            for group_index, (group_label, group_shots) in enumerate(content_groups):
+                group_candidates = self._rank_group_hero_candidates(
+                    normalized, group_shots
+                )
+                ranked_all_heroes.extend(group_candidates)
+                selected_reference: Optional[HeroAnchorReference] = None
+                selected_audit: Optional[dict[str, object]] = None
+                selected_grid: Optional[dict[int, tuple[AnchorGrade, ...]]] = None
+                for frame_index in group_candidates[: self.maximum_hero_attempts]:
+                    hero_shot = self._shot_for_frame(storyboard, frame_index)
+                    reference, audit, hero_candidate_grid = (
+                        self.search.select_hero_reference(
+                            normalized,
+                            instruction,
+                            frame_index,
+                            hero_shot.shot_id,
+                        )
+                    )
+                    audit = {
+                        "round": len(grouped_attempts) + 1,
+                        "content_group": group_label,
+                        "group_index": group_index,
+                        "group_shot_ids": [shot.shot_id for shot in group_shots],
+                        **audit,
+                    }
+                    grouped_attempts.append(audit)
+                    if reference is not None:
+                        selected_reference = reference
+                        selected_audit = audit
+                        selected_grid = hero_candidate_grid
+                        break
+                if selected_reference is None:
+                    continue
+                if primary_reference is None:
+                    primary_reference = selected_reference
+                candidate_grid = self.search.prepopulate_storyboard_candidate_grid(
+                    normalized,
+                    instruction,
+                    group_shots,
+                    selected_reference,
+                    selected_grid,
+                )
+                group_grades = tuple(
+                    self._run_shot(
+                        normalized,
+                        instruction,
+                        shot,
+                        selected_reference,
+                        candidate_grid,
+                    )
+                    for shot in group_shots
+                )
+                grouped_grades.extend(group_grades)
+                if selected_audit is not None:
+                    selected_audit.update(
+                        {
+                            "accepted_shots": sum(
+                                grade.accepted for grade in group_grades
+                            ),
+                            "total_shots": len(group_grades),
+                            "mean_shot_score": float(
+                                np.mean([grade.confidence for grade in group_grades])
+                            ),
+                            "rolled_back_shots": [
+                                grade.shot.shot_id
+                                for grade in group_grades
+                                if grade.rolled_back
+                            ],
+                            "global_committed": True,
+                            "local_hero_committed": True,
+                        }
+                    )
+            if grouped_grades and primary_reference is not None:
+                by_id = {grade.shot.shot_id: grade for grade in grouped_grades}
+                shot_grades = tuple(
+                    by_id.get(shot.shot_id)
+                    or self._identity_shot_grade(
+                        shot, "content_group_hero_selection_failed"
+                    )
+                    for shot in storyboard.shots
+                )
+                trajectory = np.zeros((len(normalized), 12), dtype=np.float64)
+                for grade in shot_grades:
+                    trajectory[
+                        grade.shot.start_frame : grade.shot.end_frame + 1
+                    ] = grade.frame_parameters
+                hero_record = HeroAnchorRecord(
+                    frame_index=primary_reference.frame_index,
+                    shot_id=primary_reference.shot_id,
+                    parameters=primary_reference.grade.parameters.to_vector(),
+                    backend=primary_reference.grade.backend,
+                    score=primary_reference.grade.score,
+                    ranked_candidates=tuple(dict.fromkeys(ranked_all_heroes)),
+                    selection_reason=(
+                        "content-aware local HeroAnchor matching; each content "
+                        "group selects its own representative hero"
+                    ),
+                    attempts=tuple(grouped_attempts),
+                )
+                return GradeGraph(
+                    instruction=instruction,
+                    storyboard=storyboard,
+                    shots=shot_grades,
+                    frame_parameters=trajectory,
+                    backend=",".join(backend.name for backend in self.anchor_backends),
+                    critic=self.critic.name,
+                    orchestrator=f"{self.search.name}+content-local-heroes",
+                    hero_anchor=hero_record,
+                    hero_anchor_attempts=tuple(grouped_attempts),
+                )
+
         global_attempts: list[dict[str, object]] = []
         best: Optional[
             tuple[
@@ -219,7 +414,7 @@ class DynamicGradePipeline:
             hero_candidates[: self.maximum_hero_attempts], start=1
         ):
             hero_shot = self._shot_for_frame(storyboard, frame_index)
-            reference, audit = self.search.select_hero_reference(
+            reference, audit, hero_candidate_grid = self.search.select_hero_reference(
                 normalized,
                 instruction,
                 frame_index,
@@ -231,8 +426,21 @@ class DynamicGradePipeline:
                 audit["rollback_scope"] = "hero_look_development"
                 global_attempts.append(audit)
                 continue
+            candidate_grid = self.search.prepopulate_storyboard_candidate_grid(
+                normalized,
+                instruction,
+                storyboard.shots,
+                reference,
+                hero_candidate_grid,
+            )
             candidate_grades = tuple(
-                self._run_shot(normalized, instruction, shot, reference)
+                self._run_shot(
+                    normalized,
+                    instruction,
+                    shot,
+                    reference,
+                    candidate_grid,
+                )
                 for shot in storyboard.shots
             )
             accepted_count = sum(grade.accepted for grade in candidate_grades)
@@ -270,11 +478,7 @@ class DynamicGradePipeline:
             if all_accepted:
                 break
 
-        committed = (
-            best
-            if best is not None and best[0][0] == len(storyboard.shots)
-            else None
-        )
+        committed = best
         if committed is None:
             if best is not None:
                 global_attempts[best[3]]["best_uncommitted_attempt"] = True

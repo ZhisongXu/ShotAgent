@@ -10,7 +10,7 @@ from video_retouch.backends import (
     ParameterEstimator,
     VLAnchorBackend,
 )
-from video_retouch.critic import ShotCritique
+from video_retouch.critic import ShotCritique, VisionReviewCritic
 from video_retouch.models import ShotPlan, StoryboardPlan
 from video_retouch.pipeline import DynamicGradePipeline
 
@@ -121,6 +121,31 @@ class FakeAnchorVisionClient:
         self.calls += 1
         self.prompts.append(prompt)
         self.image_counts.append(len(labeled_images))
+        if "Batch Anchor grading request" in prompt:
+            return {
+                "anchors": [
+                    {
+                        "frame": 3,
+                        "diagnosis": {"issues": ["too flat"]},
+                        "parameter_updates": {"temperature": 0.02},
+                        "stages": [
+                            {
+                                "stage": "white_balance_and_color",
+                                "updates": {"temperature": 0.02},
+                                "reason": "test",
+                            }
+                        ],
+                        "constraints": ["preserve_content"],
+                        "semantic_correspondences": [
+                            {"hero": "neutral subject", "target": "neutral subject"}
+                        ],
+                        "protected_regions": ["skin", "practical lights"],
+                        "mkl_decision": "reject",
+                        "mkl_weight": 0.0,
+                        "confidence": 0.8,
+                    }
+                ]
+            }
         updates = (
             {"exposure": 0.6}
             if self.calls == 1
@@ -137,6 +162,25 @@ class FakeAnchorVisionClient:
             "mkl_decision": "attenuate",
             "mkl_weight": 0.4,
             "confidence": 0.8,
+        }
+
+
+class CrossShotCautiousCriticClient:
+    model_id = "test/cautious-critic"
+
+    def generate_json(self, labeled_images, prompt):
+        del labeled_images, prompt
+        return {
+            "accept": False,
+            "score": 0.86,
+            "instruction_score": 0.9,
+            "content_score": 0.9,
+            "consistency_score": 0.5,
+            "hero_match_score": 0.0,
+            "recommended_anchor": None,
+            "reasons": [
+                "Only one pair is supplied, so cross-shot consistency cannot be fully verified."
+            ],
         }
 
 
@@ -186,7 +230,7 @@ class DynamicGradePipelineTest(unittest.TestCase):
             shot.search_memory["rounds"][0]["anchor_action"], "replace"
         )
 
-    def test_rejected_shot_rolls_parameter_graph_back_to_identity(self) -> None:
+    def test_rejected_shot_keeps_positive_feedback_grade(self) -> None:
         pipeline = DynamicGradePipeline(
             shot_planner=FixedShotPlanner(),
             anchor_backend=FixedAnchorBackend(),
@@ -198,9 +242,10 @@ class DynamicGradePipelineTest(unittest.TestCase):
 
         shot = result.shots[0]
         self.assertTrue(shot.rolled_back)
-        self.assertEqual(shot.rollback_reason, "content_fidelity")
-        np.testing.assert_allclose(result.frame_parameters, 0.0)
-        self.assertEqual(shot.parameter_keyframes, {})
+        self.assertIn("content_fidelity", shot.rollback_reason)
+        self.assertIn("critic_feedback_amplified", shot.rollback_reason)
+        self.assertGreater(np.abs(result.frame_parameters).sum(), 0.0)
+        self.assertTrue(shot.parameter_keyframes)
 
     def test_image_only_backend_result_is_recovered_as_parameters(self) -> None:
         array = np.linspace(20, 180, 20 * 24 * 3, dtype=np.uint8).reshape(20, 24, 3)
@@ -273,6 +318,69 @@ class DynamicGradePipelineTest(unittest.TestCase):
             grade.metadata["mkl_prior"]["semantic_decision"]["protected_regions"],
             ["skin", "practical lights"],
         )
+        self.assertGreaterEqual(abs(grade.parameters.temperature), 0.10)
+        self.assertGreaterEqual(abs(grade.parameters.vibrance), 0.14)
+        self.assertLessEqual(abs(grade.parameters.vibrance), 0.38)
+
+    def test_batch_anchor_matching_applies_assertive_strength_floor(self) -> None:
+        client = FakeAnchorVisionClient()
+        backend = VLAnchorBackend(
+            client,
+            stages=("white_balance_and_color",),
+            candidate_count=1,
+            seed=2,
+        )
+        hero_source = Image.fromarray(
+            np.full((24, 28, 3), 80, dtype=np.uint8), mode="RGB"
+        )
+        hero_parameters = RetouchParameters(temperature=0.2, contrast=0.1)
+        hero_grade = AnchorGrade(
+            frame_index=1,
+            parameters=hero_parameters,
+            preview=RetouchExecutor().apply(hero_source, hero_parameters),
+            valid=True,
+            score=0.9,
+            backend="hero-editor",
+        )
+        reference = HeroAnchorReference(1, 0, hero_source, hero_grade)
+        frames = [
+            Image.fromarray(np.full((24, 28, 3), value, dtype=np.uint8), mode="RGB")
+            for value in (80, 90, 100, 120)
+        ]
+
+        grades = backend.batch_grade_with_reference(
+            frames, "match the cinematic look", (3,), 2, reference
+        )
+
+        self.assertEqual(len(grades), 1)
+        self.assertIn("Batch Anchor grading request", client.prompts[0])
+        self.assertGreaterEqual(abs(grades[0].parameters.temperature), 0.10)
+        self.assertGreaterEqual(abs(grades[0].parameters.contrast), 0.12)
+        self.assertGreaterEqual(abs(grades[0].parameters.vibrance), 0.14)
+        self.assertLessEqual(abs(grades[0].parameters.vibrance), 0.38)
+
+    def test_hero_anchor_critic_does_not_reject_for_missing_cross_shot_context(self):
+        critic = VisionReviewCritic(
+            CrossShotCautiousCriticClient(),
+            name="api-grade-critic",
+            focus="cross-shot visual coherence",
+        )
+        frame = Image.fromarray(np.full((24, 28, 3), 90, dtype=np.uint8), mode="RGB")
+        shot = ShotPlan(0, 0, 0, (0,))
+
+        result = critic.evaluate(
+            [frame],
+            [frame],
+            np.zeros((1, 12)),
+            np.zeros((1, 12)),
+            shot,
+            "strong cinematic",
+            (),
+            hero_reference=None,
+        )
+
+        self.assertTrue(result.accepted)
+        self.assertEqual(result.reasons, ())
 
 
 if __name__ == "__main__":

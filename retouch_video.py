@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from video_retouch import (
@@ -15,6 +16,47 @@ from video_retouch.agent_config import load_multi_agent_runtime
 from video_retouch.io import decode_video, encode_video
 from video_retouch.render import render_grade_frames
 from video_retouch.resolve_export import export_resolve_package
+
+
+def progress(message: str) -> None:
+    print(f"[progress] {message}", flush=True)
+
+
+def load_env_file(path: Path) -> None:
+    if not path.is_file():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+def resample_parameter_trajectory(
+    parameters,
+    target_frame_count: int,
+):
+    import numpy as np
+
+    source = np.asarray(parameters, dtype=np.float64)
+    if source.ndim != 2 or source.shape[1] != 12:
+        raise ValueError("Parameter trajectory must have shape [frames, 12].")
+    if target_frame_count < 1:
+        raise ValueError("target_frame_count must be positive.")
+    if source.shape[0] == target_frame_count:
+        return source
+    if source.shape[0] == 1:
+        return np.repeat(source, target_frame_count, axis=0)
+    source_t = np.linspace(0.0, 1.0, source.shape[0], dtype=np.float64)
+    target_t = np.linspace(0.0, 1.0, target_frame_count, dtype=np.float64)
+    return np.stack(
+        [np.interp(target_t, source_t, source[:, column]) for column in range(12)],
+        axis=1,
+    )
 
 
 def main() -> None:
@@ -79,6 +121,30 @@ def main() -> None:
     )
     parser.add_argument("--max-frames", type=int)
     parser.add_argument(
+        "--target-fps",
+        type=float,
+        help=(
+            "Legacy shortcut for --analysis-fps. Decode a lower-frame-rate "
+            "working copy while preserving duration."
+        ),
+    )
+    parser.add_argument(
+        "--analysis-fps",
+        type=float,
+        help=(
+            "Decode a lower-frame-rate working copy for API planning. "
+            "For example, 6 on a 24 FPS source analyzes roughly one frame in four."
+        ),
+    )
+    parser.add_argument(
+        "--render-fps",
+        type=float,
+        help=(
+            "Decode/render video artifacts at this FPS. Omit to preserve the "
+            "source video's original frame rate."
+        ),
+    )
+    parser.add_argument(
         "--max-side",
         type=int,
         help="Legacy shortcut setting both analysis and render maximum side.",
@@ -100,11 +166,17 @@ def main() -> None:
         help="Number of full-resolution frames rendered together.",
     )
     parser.add_argument(
+        "--encode-preset",
+        default="medium",
+        help="libx264 preset for MP4 artifacts; use ultrafast for quick previews.",
+    )
+    parser.add_argument(
         "--compact",
         action="store_true",
         help="Omit the dense per-frame parameter trajectory.",
     )
     args = parser.parse_args()
+    load_env_file(Path(__file__).resolve().parent / ".env")
 
     analysis_max_side = (
         args.analysis_max_side
@@ -114,12 +186,21 @@ def main() -> None:
     render_max_side = (
         args.render_max_side if args.render_max_side is not None else args.max_side
     )
+    analysis_fps = args.analysis_fps if args.analysis_fps is not None else args.target_fps
+    progress("decoding analysis video")
     decoded = decode_video(
         args.input,
         max_frames=args.max_frames,
         max_side=analysis_max_side,
+        target_fps=analysis_fps,
+    )
+    progress(
+        "decoded analysis video "
+        f"frames={len(decoded.frames)} fps={decoded.fps:.3f} "
+        f"size={decoded.width}x{decoded.height}"
     )
     if args.offline_native:
+        progress("building offline-native runtime")
         planner = HeuristicShotPlanner()
         maximum_attempts = (
             args.mcts_simulations if args.mcts_simulations is not None else 3
@@ -157,6 +238,7 @@ def main() -> None:
             },
         }
     else:
+        progress(f"loading agent config {args.agent_config}")
         configured_runtime = load_multi_agent_runtime(args.agent_config)
         planner = VLShotPlanner(
             client=configured_runtime.storyboard_client,
@@ -180,7 +262,9 @@ def main() -> None:
             mcts_seed=configured_runtime.search.seed,
         )
         runtime_manifest = configured_runtime.manifest
+    progress("running storyboard, grading search, and API critics")
     result = pipeline.run(decoded.frames, decoded.fps, args.instruction)
+    progress("pipeline run finished")
     payload = result.to_dict(include_frame_parameters=not args.compact)
     payload["agent_runtime"] = runtime_manifest
     payload["source_video"] = {
@@ -191,6 +275,7 @@ def main() -> None:
         "frame_count": len(decoded.frames),
     }
     if args.video_output_dir is not None:
+        progress("preparing video artifacts")
         video_output_dir = args.video_output_dir.resolve()
         source_video_output = video_output_dir / f"{args.input.stem}.source.mp4"
         result_video_output = video_output_dir / f"{args.input.stem}.graded.mp4"
@@ -201,23 +286,50 @@ def main() -> None:
             raise ValueError("Video artifact path would overwrite the source video.")
         render_video = (
             decoded
-            if render_max_side == analysis_max_side
+            if render_max_side == analysis_max_side and args.render_fps == analysis_fps
             else decode_video(
                 args.input,
                 max_frames=args.max_frames,
                 max_side=render_max_side,
+                target_fps=args.render_fps,
             )
         )
+        progress(
+            "render source ready "
+            f"frames={len(render_video.frames)} fps={render_video.fps:.3f} "
+            f"size={render_video.width}x{render_video.height}"
+        )
+        render_parameters = resample_parameter_trajectory(
+            result.frame_parameters,
+            len(render_video.frames),
+        )
         if len(render_video.frames) != len(decoded.frames):
-            raise RuntimeError("Analysis and render decodes have different frame counts.")
+            progress(
+                "resampled parameter trajectory "
+                f"analysis_frames={len(decoded.frames)} "
+                f"render_frames={len(render_video.frames)}"
+            )
+        progress("rendering graded frames")
         rendered_frames = render_grade_frames(
             render_video.frames,
-            result.frame_parameters,
+            render_parameters,
             executor=pipeline.executor,
             batch_size=args.render_batch_size,
         )
-        encode_video(render_video.frames, source_video_output, render_video.fps)
-        encode_video(rendered_frames, result_video_output, render_video.fps)
+        progress(f"encoding source preview with preset={args.encode_preset}")
+        encode_video(
+            render_video.frames,
+            source_video_output,
+            render_video.fps,
+            preset=args.encode_preset,
+        )
+        progress(f"encoding graded preview with preset={args.encode_preset}")
+        encode_video(
+            rendered_frames,
+            result_video_output,
+            render_video.fps,
+            preset=args.encode_preset,
+        )
         payload["video_artifacts"] = {
             "input": str(source_video_output),
             "result": str(result_video_output),
@@ -227,11 +339,15 @@ def main() -> None:
             "height": render_video.height,
             "analysis_width": decoded.width,
             "analysis_height": decoded.height,
+            "analysis_fps": decoded.fps,
+            "analysis_frame_count": len(decoded.frames),
+            "trajectory_resampled": len(render_video.frames) != len(decoded.frames),
             "video_codec": "H.264/libx264",
             "quality": "CRF approximately 15",
             "audio_preserved": False,
         }
     if args.resolve_package_dir is not None:
+        progress("exporting Resolve package")
         resolve_manifest = export_resolve_package(
             result,
             decoded.source,
@@ -239,11 +355,13 @@ def main() -> None:
             dynamic_keyframe_error=args.resolve_keyframe_error,
         )
         payload["resolve_package"] = str(resolve_manifest)
+    progress(f"writing grade JSON {args.output}")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     if args.trajectory_output is not None:
+        progress(f"writing trajectory JSONL {args.trajectory_output}")
         rows = []
         for shot in result.shots:
             rows.append(
@@ -267,6 +385,7 @@ def main() -> None:
             "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
             encoding="utf-8",
         )
+    progress("done")
     print(args.output)
     if args.video_output_dir is not None:
         print(payload["video_artifacts"]["input"])

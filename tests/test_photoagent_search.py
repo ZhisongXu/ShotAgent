@@ -1,3 +1,4 @@
+import json
 import unittest
 
 import numpy as np
@@ -21,6 +22,33 @@ class OneShotPlanner:
         )
 
 
+class TwoAnchorPlanner:
+    def plan(self, frames, fps, instruction, anchors_per_shot=2):
+        del instruction, anchors_per_shot
+        return StoryboardPlan(
+            frame_count=len(frames),
+            fps=fps,
+            shots=(ShotPlan(0, 0, len(frames) - 1, (0, 2), (0, 2)),),
+            planner="fixed",
+        )
+
+
+class TwoShotPlanner:
+    def plan(self, frames, fps, instruction, anchors_per_shot=1):
+        del instruction, anchors_per_shot
+        return StoryboardPlan(
+            frame_count=len(frames),
+            fps=fps,
+            shots=(
+                ShotPlan(0, 0, 1, (0,), (0,)),
+                ShotPlan(1, 2, 3, (3,), (3,)),
+            ),
+            planner="fixed",
+            hero_anchor_frame=0,
+            hero_anchor_candidates=(0,),
+        )
+
+
 class ExposureEditor:
     def __init__(self, name, exposure):
         self.name = name
@@ -38,6 +66,53 @@ class ExposureEditor:
             score=0.5,
             backend=self.name,
             metadata={"shot_id": shot_id},
+        )
+
+
+class BatchExposureEditor(ExposureEditor):
+    def __init__(self, name, exposure):
+        super().__init__(name, exposure)
+        self.batch_calls = []
+        self.single_calls = []
+
+    def grade(self, image, instruction, frame_index, shot_id):
+        self.single_calls.append(frame_index)
+        return super().grade(image, instruction, frame_index, shot_id)
+
+    def batch_grade(self, frames, instruction, frame_indices, shot_id):
+        self.batch_calls.append(tuple(frame_indices))
+        return tuple(
+            super(BatchExposureEditor, self).grade(
+                frames[frame_index], instruction, frame_index, shot_id
+            )
+            for frame_index in frame_indices
+        )
+
+    def batch_grade_with_reference(
+        self, frames, instruction, frame_indices, shot_id, hero_reference
+    ):
+        del hero_reference
+        return self.batch_grade(frames, instruction, frame_indices, shot_id)
+
+
+class StoryboardBatchExposureEditor(BatchExposureEditor):
+    def __init__(self, name, exposure):
+        super().__init__(name, exposure)
+        self.storyboard_batch_calls = []
+
+    def batch_grade_storyboard(
+        self, frames, instruction, frame_indices, frame_to_shot, hero_reference
+    ):
+        del hero_reference
+        self.storyboard_batch_calls.append((tuple(frame_indices), dict(frame_to_shot)))
+        return tuple(
+            super(BatchExposureEditor, self).grade(
+                frames[frame_index],
+                instruction,
+                frame_index,
+                frame_to_shot[frame_index],
+            )
+            for frame_index in frame_indices
         )
 
 
@@ -92,6 +167,13 @@ class PhotoAgentSearchTest(unittest.TestCase):
             for _ in range(3)
         ]
 
+    @staticmethod
+    def four_frames():
+        return [
+            Image.fromarray(np.full((18, 20, 3), 80, dtype=np.uint8), mode="RGB")
+            for _ in range(4)
+        ]
+
     def test_mcts_explores_multiple_editors_and_keeps_best_branch(self):
         pipeline = DynamicGradePipeline(
             shot_planner=OneShotPlanner(),
@@ -116,6 +198,44 @@ class PhotoAgentSearchTest(unittest.TestCase):
             set(shot.search_memory["editor_agents"]),
             {"conservative-editor", "bright-editor"},
         )
+
+    def test_mcts_batches_anchor_proposals_when_backend_supports_it(self):
+        editor = BatchExposureEditor("batch-editor", 0.25)
+        pipeline = DynamicGradePipeline(
+            shot_planner=TwoAnchorPlanner(),
+            anchor_backends=(editor,),
+            critic=ExposurePreferenceCritic(),
+            anchors_per_shot=2,
+            maximum_anchors_per_shot=2,
+            maximum_attempts=1,
+            mcts_seed=3,
+        )
+
+        result = pipeline.run(self.frames(), 3.0, "make it warm")
+
+        self.assertTrue(result.shots[0].accepted)
+        self.assertEqual(editor.batch_calls, [(2,)])
+        self.assertEqual(editor.single_calls, [0])
+
+    def test_pipeline_batches_storyboard_anchor_proposals_across_shots(self):
+        editor = StoryboardBatchExposureEditor("storyboard-batch-editor", 0.25)
+        pipeline = DynamicGradePipeline(
+            shot_planner=TwoShotPlanner(),
+            anchor_backends=(editor,),
+            critic=ExposurePreferenceCritic(),
+            anchors_per_shot=1,
+            maximum_anchors_per_shot=1,
+            maximum_attempts=1,
+            maximum_hero_attempts=1,
+            mcts_seed=3,
+        )
+
+        result = pipeline.run(self.four_frames(), 2.0, "make it warm")
+
+        self.assertTrue(all(shot.accepted for shot in result.shots))
+        self.assertEqual(editor.storyboard_batch_calls, [((3,), {0: 0, 3: 1})])
+        self.assertEqual(editor.batch_calls, [])
+        json.dumps(result.to_dict())
 
     def test_critic_ensemble_safety_veto_forces_rejection(self):
         ensemble = CriticEnsemble(

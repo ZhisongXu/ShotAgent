@@ -4,6 +4,19 @@
 *.pt
 *.ckpt
 *.vscode
+.env
+
+# Local video assets and archives.
+*.mp4
+*.m4v
+*.mov
+*.avi
+*.mkv
+*.webm
+*.wmv
+*.flv
+*.mp4.zip
+*.m4v.zip
 
 **/__pycache__/
 **/.eggs/

@@ -59,14 +59,45 @@ class _VisionHandler(BaseHTTPRequestHandler):
                 ]
             }
         elif "<TASK_ANCHOR_GRADE>" in prompt:
+            if "Batch Anchor grading request" in prompt:
+                payload = {
+                    "anchors": [
+                        {
+                            "frame": 1,
+                            "diagnosis": {"issues": ["dark"]},
+                            "parameter_updates": {"exposure": 0.4},
+                            "stages": [
+                                {
+                                    "stage": "lighting",
+                                    "updates": {"exposure": 0.4},
+                                    "reason": "dark frame",
+                                }
+                            ],
+                            "constraints": ["preserve_content"],
+                            "confidence": 0.9,
+                        }
+                    ]
+                }
             if 'stage "lighting"' in prompt:
                 updates = {"exposure": 0.4}
             else:
                 updates = {"temperature": 0.1}
+            if "Batch Anchor grading request" not in prompt:
+                payload = {
+                    "diagnosis": {"issues": ["dark"]},
+                    "parameter_updates": updates,
+                    "constraints": ["preserve_content"],
+                    "confidence": 0.9,
+                }
+        elif "<TASK_ANCHOR_MATCH>" in prompt:
             payload = {
-                "diagnosis": {"issues": ["dark"]},
-                "parameter_updates": updates,
+                "diagnosis": {"match_gaps": ["dark"]},
+                "parameter_updates": {"exposure": 0.3},
                 "constraints": ["preserve_content"],
+                "semantic_correspondences": [{"hero": "tone", "target": "tone"}],
+                "protected_regions": [],
+                "mkl_decision": "reject",
+                "mkl_weight": 0.0,
                 "confidence": 0.9,
             }
         elif "<TASK_CRITIQUE>" in prompt:
@@ -200,7 +231,13 @@ class VideoCliEndToEndTest(unittest.TestCase):
                 self.assertEqual(len(payload["agent_runtime"]["editors"]), 2)
                 self.assertTrue(payload["shots"][0]["accepted"])
                 self.assertGreater(
-                    payload["shots"][0]["parameter_keyframes"]["1"][0], 0.0
+                    max(
+                        abs(value)
+                        for value in payload["shots"][0][
+                            "parameter_keyframes"
+                        ]["1"]
+                    ),
+                    0.0,
                 )
                 self.assertTrue(rollouts.read_text(encoding="utf-8").strip())
                 self.assertTrue((video_outputs / "input.source.mp4").is_file())

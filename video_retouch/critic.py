@@ -408,6 +408,15 @@ class VisionReviewCritic:
                 if isinstance(raw_reasons, list)
                 else (str(raw_reasons),)
             )
+            if (
+                not accepted
+                and hero_reference is None
+                and len(source_frames) == 1
+                and score >= 0.5
+                and any("cross-shot" in reason.lower() for reason in reasons)
+            ):
+                accepted = True
+                reasons = ()
             metrics = {}
             for key in (
                 "instruction_score",

@@ -17,12 +17,34 @@ from PIL import Image
 
 from retouch_agent import AnchorRetouchAgent, RetouchExecutor, RetouchParameters
 from retouch_agent.parameters import PARAMETER_LOWER_BOUNDS, PARAMETER_UPPER_BOUNDS
-from retouch_agent.planner import HeuristicRetouchPlanner, RetouchPlan
+from retouch_agent.planner import HeuristicRetouchPlanner, RetouchPlan, image_statistics
 
 from .clients import VisionLanguageClient
 from .color_science import LinearMongeKantorovichMatcher
 from .monet_adapter import convert_monet_adjustments
-from .tasks import anchor_grade_prompt, anchor_match_prompt
+from .tasks import (
+    anchor_grade_prompt,
+    anchor_match_prompt,
+    batch_anchor_grade_prompt,
+    batch_storyboard_anchor_grade_prompt,
+)
+
+
+STYLE_STRENGTH_GUARDRAILS = {
+    "minimum_global_l1": 0.32,
+    "minimum_key_parameter": 0.12,
+    "soft_cap": 0.38,
+    "hard_cap": 0.48,
+    "preferred_defaults": {
+        "temperature": 0.10,
+        "contrast": 0.12,
+        "highlights": -0.08,
+        "shadows": 0.04,
+        "saturation": 0.10,
+        "vibrance": 0.14,
+        "tone_curve": 0.10,
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -124,6 +146,58 @@ class _FixedRetouchPlanner:
         return self._plan
 
 
+def _apply_assertive_style_floor(
+    values: dict[str, float],
+    image: Optional[Image.Image] = None,
+) -> dict[str, float]:
+    adjusted = dict(values)
+    key_names = tuple(STYLE_STRENGTH_GUARDRAILS["preferred_defaults"])
+    soft_cap = float(STYLE_STRENGTH_GUARDRAILS["soft_cap"])
+    hard_cap = float(STYLE_STRENGTH_GUARDRAILS["hard_cap"])
+    minimum_key = float(STYLE_STRENGTH_GUARDRAILS["minimum_key_parameter"])
+    minimum_l1 = float(STYLE_STRENGTH_GUARDRAILS["minimum_global_l1"])
+    stats = image_statistics(image) if image is not None else None
+    if stats is not None:
+        luminance = float(stats["luminance"])
+        contrast = float(stats["contrast"])
+        saturation = float(stats["saturation"])
+        if luminance < 0.24:
+            soft_cap = min(soft_cap, 0.26)
+            hard_cap = min(hard_cap, 0.34)
+            adjusted["contrast"] = min(float(adjusted.get("contrast", 0.0)), 0.20)
+            adjusted["tone_curve"] = min(float(adjusted.get("tone_curve", 0.0)), 0.22)
+            adjusted["highlights"] = max(float(adjusted.get("highlights", 0.0)), -0.16)
+            adjusted["shadows"] = max(float(adjusted.get("shadows", 0.0)), 0.08)
+            adjusted["vibrance"] = min(float(adjusted.get("vibrance", 0.0)), 0.24)
+        elif luminance > 0.68:
+            adjusted["highlights"] = max(float(adjusted.get("highlights", 0.0)), -0.22)
+            adjusted["contrast"] = min(float(adjusted.get("contrast", 0.0)), 0.26)
+            adjusted["tone_curve"] = min(float(adjusted.get("tone_curve", 0.0)), 0.26)
+        if contrast < 0.08:
+            adjusted["contrast"] = min(float(adjusted.get("contrast", 0.0)), 0.24)
+            adjusted["tone_curve"] = min(float(adjusted.get("tone_curve", 0.0)), 0.24)
+            adjusted["highlights"] = max(float(adjusted.get("highlights", 0.0)), -0.18)
+        if saturation > 0.28:
+            adjusted["saturation"] = min(float(adjusted.get("saturation", 0.0)), 0.16)
+            adjusted["vibrance"] = min(float(adjusted.get("vibrance", 0.0)), 0.24)
+    for name in key_names:
+        current = float(adjusted.get(name, 0.0))
+        if abs(current) > hard_cap:
+            adjusted[name] = float(np.sign(current) * hard_cap)
+        elif abs(current) > soft_cap:
+            adjusted[name] = float(np.sign(current) * soft_cap)
+    key_values = np.asarray([float(adjusted.get(name, 0.0)) for name in key_names])
+    if np.max(np.abs(key_values)) < minimum_key or np.sum(np.abs(key_values)) < minimum_l1:
+        for name, default in STYLE_STRENGTH_GUARDRAILS["preferred_defaults"].items():
+            current = float(adjusted.get(name, 0.0))
+            if abs(current) < abs(default):
+                adjusted[name] = float(default if current == 0.0 else np.sign(current) * abs(default))
+    adjusted["local_exposure"] = 0.0
+    adjusted["local_temperature"] = 0.0
+    adjusted["local_saturation"] = 0.0
+    return adjusted
+
+
 class VLAnchorBackend:
     """Use a dedicated vision model for operation-aware Anchor grading."""
 
@@ -183,6 +257,252 @@ class VLAnchorBackend:
             shot_id,
             hero_reference=hero_reference,
         )
+
+    def batch_grade(
+        self,
+        frames: Sequence[Image.Image],
+        instruction: str,
+        frame_indices: Sequence[int],
+        shot_id: int,
+    ) -> tuple[AnchorGrade, ...]:
+        return self._batch_grade(
+            frames,
+            instruction,
+            frame_indices,
+            shot_id,
+            hero_reference=None,
+        )
+
+    def batch_grade_with_reference(
+        self,
+        frames: Sequence[Image.Image],
+        instruction: str,
+        frame_indices: Sequence[int],
+        shot_id: int,
+        hero_reference: HeroAnchorReference,
+    ) -> tuple[AnchorGrade, ...]:
+        return self._batch_grade(
+            frames,
+            instruction,
+            frame_indices,
+            shot_id,
+            hero_reference=hero_reference,
+        )
+
+    def batch_grade_storyboard(
+        self,
+        frames: Sequence[Image.Image],
+        instruction: str,
+        frame_indices: Sequence[int],
+        frame_to_shot: dict[int, int],
+        hero_reference: HeroAnchorReference,
+    ) -> tuple[AnchorGrade, ...]:
+        return self._batch_grade(
+            frames,
+            instruction,
+            frame_indices,
+            shot_id=-1,
+            hero_reference=hero_reference,
+            frame_to_shot=frame_to_shot,
+        )
+
+    def _finish_grade(
+        self,
+        source: Image.Image,
+        instruction: str,
+        frame_index: int,
+        shot_id: int,
+        parameters: RetouchParameters,
+        stage_records: list[dict[str, object]],
+        constraints: list[str],
+        confidences: list[float],
+        hero_reference: Optional[HeroAnchorReference],
+        mkl_metadata: Optional[dict[str, object]] = None,
+    ) -> AnchorGrade:
+        heuristic_plan = self.heuristic.plan(source, instruction)
+        plan = RetouchPlan(
+            diagnosis={
+                "planner": "dedicated-vl-anchor-agent",
+                "model_id": self.client.model_id,
+                "stages": stage_records,
+            },
+            initial_parameters=parameters,
+            targets=heuristic_plan.targets,
+            constraints=tuple(
+                dict.fromkeys([*heuristic_plan.constraints, *constraints])
+            ),
+        )
+        agent = AnchorRetouchAgent(
+            planner=_FixedRetouchPlanner(plan),
+            candidate_count=self.candidate_count,
+            seed=self.seed,
+        )
+        result = agent.run(source, instruction)
+        final_parameters = RetouchParameters.from_mapping(
+            _apply_assertive_style_floor(result.parameters.to_dict(), source),
+            clamp=True,
+        )
+        final_preview = self.executor.apply(source, final_parameters)
+        return AnchorGrade(
+            frame_index=frame_index,
+            parameters=final_parameters,
+            preview=final_preview,
+            valid=True,
+            score=max(result.evaluation.score, 0.0),
+            backend=self.name,
+            metadata={
+                "shot_id": shot_id,
+                "mean_model_confidence": (
+                    float(np.mean(confidences)) if confidences else 0.0
+                ),
+                "matched_to_hero_frame": (
+                    None if hero_reference is None else hero_reference.frame_index
+                ),
+                "matched_to_hero_shot": (
+                    None if hero_reference is None else hero_reference.shot_id
+                ),
+                "mkl_prior": mkl_metadata,
+                "assertive_strength_floor_applied": (
+                    final_parameters.to_dict() != result.parameters.to_dict()
+                ),
+                **result.to_dict(),
+            },
+        )
+
+    def _batch_grade(
+        self,
+        frames: Sequence[Image.Image],
+        instruction: str,
+        frame_indices: Sequence[int],
+        shot_id: int,
+        hero_reference: Optional[HeroAnchorReference],
+        frame_to_shot: Optional[dict[int, int]] = None,
+    ) -> tuple[AnchorGrade, ...]:
+        indices = tuple(dict.fromkeys(int(index) for index in frame_indices))
+        if not indices:
+            return tuple()
+        current_parameters = {
+            index: RetouchParameters().to_dict() for index in indices
+        }
+        labeled_images: list[tuple[str, Image.Image]] = []
+        if hero_reference is not None:
+            labeled_images.extend(
+                [
+                    (
+                        f"HeroAnchor source frame {hero_reference.frame_index}",
+                        hero_reference.source,
+                    ),
+                    (
+                        f"accepted graded HeroAnchor frame "
+                        f"{hero_reference.frame_index}",
+                        hero_reference.grade.preview,
+                    ),
+                ]
+            )
+        for index in indices:
+            labeled_images.append((f"target Anchor frame_id={index}", frames[index]))
+        prompt = (
+            batch_storyboard_anchor_grade_prompt(
+                instruction,
+                self.stages,
+                frame_to_shot,
+                current_parameters,
+                hero_reference.frame_index,
+                hero_reference.shot_id,
+            )
+            if frame_to_shot is not None and hero_reference is not None
+            else batch_anchor_grade_prompt(
+                instruction,
+                self.stages,
+                current_parameters,
+                shot_id,
+                hero_frame=(
+                    None if hero_reference is None else hero_reference.frame_index
+                ),
+                hero_shot_id=(
+                    None if hero_reference is None else hero_reference.shot_id
+                ),
+            )
+        )
+        payload = self.client.generate_json(labeled_images, prompt)
+        raw_anchors = payload.get("anchors", [])
+        if not isinstance(raw_anchors, list):
+            raise ValueError("Batch Anchor Agent response requires anchors.")
+        by_frame: dict[int, dict[str, object]] = {}
+        for item in raw_anchors:
+            if isinstance(item, dict) and "frame" in item:
+                by_frame[int(item["frame"])] = item
+        grades: list[AnchorGrade] = []
+        for index in indices:
+            item = by_frame.get(index)
+            if item is None:
+                item = {
+                    "frame": index,
+                    "parameter_updates": {},
+                    "confidence": 0.35,
+                    "constraints": [
+                        "Batch Anchor Agent omitted this frame; applied assertive fallback grade instead of returning identity."
+                    ],
+                    "diagnosis": {
+                        "fallback": "omitted_frame_assertive_floor",
+                        "reason": "batch_anchor_response_missing_frame",
+                    },
+                }
+            raw_updates = item.get("parameter_updates", {})
+            if not isinstance(raw_updates, dict):
+                raise ValueError("Batch Anchor item requires parameter_updates.")
+            merged = RetouchParameters().to_dict()
+            for name, value in raw_updates.items():
+                if name not in merged:
+                    raise ValueError(f"Anchor Agent returned unknown parameter: {name}")
+                merged[name] += float(value)
+            merged = _apply_assertive_style_floor(merged, frames[index])
+            parameters = RetouchParameters.from_mapping(merged, clamp=True)
+            raw_constraints = item.get("constraints", [])
+            constraints = (
+                [str(value) for value in raw_constraints]
+                if isinstance(raw_constraints, list)
+                else []
+            )
+            confidence = float(np.clip(float(item.get("confidence", 0.0)), 0.0, 1.0))
+            raw_stage_records = item.get("stages", [])
+            model_stage_records = raw_stage_records if isinstance(raw_stage_records, list) else []
+            stage_records = [
+                {
+                    "stage": "batched_pool",
+                    "diagnosis": item.get("diagnosis", {}),
+                    "parameter_updates": {
+                        name: float(value) for name, value in raw_updates.items()
+                    },
+                    "parameters_after_stage": parameters.to_dict(),
+                    "confidence": confidence,
+                    "model_stages": model_stage_records,
+                    "semantic_correspondences": item.get(
+                        "semantic_correspondences", []
+                    ),
+                    "protected_regions": item.get("protected_regions", []),
+                    "mkl_decision": item.get("mkl_decision", "not_available"),
+                    "mkl_weight": float(item.get("mkl_weight", 0.0)),
+                }
+            ]
+            grades.append(
+                self._finish_grade(
+                    frames[index].convert("RGB"),
+                    instruction,
+                    index,
+                    (
+                        shot_id
+                        if frame_to_shot is None
+                        else int(frame_to_shot.get(index, shot_id))
+                    ),
+                    parameters,
+                    stage_records,
+                    constraints,
+                    [confidence],
+                    hero_reference,
+                )
+            )
+        return tuple(grades)
 
     def _grade(
         self,
@@ -291,6 +611,7 @@ class VLAnchorBackend:
                 if name not in merged:
                     raise ValueError(f"Anchor Agent returned unknown parameter: {name}")
                 merged[name] += float(value)
+            merged = _apply_assertive_style_floor(merged, source)
             parameters = RetouchParameters.from_mapping(merged, clamp=True)
             preview = self.executor.apply(source, parameters)
             raw_constraints = payload.get("constraints", [])
@@ -316,67 +637,39 @@ class VLAnchorBackend:
                 }
             )
 
-        heuristic_plan = self.heuristic.plan(source, instruction)
-        plan = RetouchPlan(
-            diagnosis={
-                "planner": "dedicated-vl-anchor-agent",
-                "model_id": self.client.model_id,
-                "stages": stage_records,
-            },
-            initial_parameters=parameters,
-            targets=heuristic_plan.targets,
-            constraints=tuple(
-                dict.fromkeys([*heuristic_plan.constraints, *constraints])
-            ),
+        mkl_payload = (
+            None
+            if hero_reference is None or not self.use_mkl_prior
+            else {
+                **mkl_metadata,
+                "semantic_decision": next(
+                    (
+                        {
+                            "decision": record["mkl_decision"],
+                            "weight": record["mkl_weight"],
+                            "correspondences": record[
+                                "semantic_correspondences"
+                            ],
+                            "protected_regions": record["protected_regions"],
+                        }
+                        for record in stage_records
+                        if record["mkl_decision"] != "not_available"
+                    ),
+                    None,
+                ),
+            }
         )
-        agent = AnchorRetouchAgent(
-            planner=_FixedRetouchPlanner(plan),
-            candidate_count=self.candidate_count,
-            seed=self.seed,
-        )
-        result = agent.run(source, instruction)
-        return AnchorGrade(
-            frame_index=frame_index,
-            parameters=result.parameters,
-            preview=result.image,
-            valid=result.evaluation.valid and not result.rolled_back,
-            score=result.evaluation.score,
-            backend=self.name,
-            metadata={
-                "shot_id": shot_id,
-                "mean_model_confidence": float(np.mean(confidences)),
-                "matched_to_hero_frame": (
-                    None if hero_reference is None else hero_reference.frame_index
-                ),
-                "matched_to_hero_shot": (
-                    None if hero_reference is None else hero_reference.shot_id
-                ),
-                "mkl_prior": (
-                    None
-                    if hero_reference is None or not self.use_mkl_prior
-                    else {
-                        **mkl_metadata,
-                        "semantic_decision": next(
-                            (
-                                {
-                                    "decision": record["mkl_decision"],
-                                    "weight": record["mkl_weight"],
-                                    "correspondences": record[
-                                        "semantic_correspondences"
-                                    ],
-                                    "protected_regions": record[
-                                        "protected_regions"
-                                    ],
-                                }
-                                for record in stage_records
-                                if record["mkl_decision"] != "not_available"
-                            ),
-                            None,
-                        ),
-                    }
-                ),
-                **result.to_dict(),
-            },
+        return self._finish_grade(
+            source,
+            instruction,
+            frame_index,
+            shot_id,
+            parameters,
+            stage_records,
+            constraints,
+            confidences,
+            hero_reference,
+            mkl_payload,
         )
 
 
