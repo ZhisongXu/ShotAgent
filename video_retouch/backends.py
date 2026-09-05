@@ -319,6 +319,36 @@ class VLAnchorBackend:
         hero_reference: Optional[HeroAnchorReference],
         mkl_metadata: Optional[dict[str, object]] = None,
     ) -> AnchorGrade:
+        if hero_reference is not None and hero_reference.frame_index < 0:
+            # External-reference mode is an API-editor pool: preserve each
+            # editor's visual proposal and let the pool critic compare the
+            # rendered candidates. The legacy single-image parameter search
+            # uses instruction-only targets and can incorrectly roll a valid
+            # reference match back to identity before the pool sees it.
+            final_parameters = RetouchParameters.from_mapping(
+                parameters.to_dict(), clamp=True
+            )
+            return AnchorGrade(
+                frame_index=frame_index,
+                parameters=final_parameters,
+                preview=self.executor.apply(source, final_parameters),
+                valid=True,
+                score=float(np.mean(confidences)) if confidences else 0.0,
+                backend=self.name,
+                metadata={
+                    "shot_id": shot_id,
+                    "mean_model_confidence": (
+                        float(np.mean(confidences)) if confidences else 0.0
+                    ),
+                    "matched_to_external_reference_video": True,
+                    "reference_sampled_frames": hero_reference.grade.metadata.get(
+                        "sampled_frames"
+                    ),
+                    "mkl_prior": mkl_metadata,
+                    "api_stage_records": stage_records,
+                    "constraints": list(dict.fromkeys(constraints)),
+                },
+            )
         heuristic_plan = self.heuristic.plan(source, instruction)
         plan = RetouchPlan(
             diagnosis={

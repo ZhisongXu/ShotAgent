@@ -62,6 +62,11 @@ def resample_parameter_trajectory(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, required=True, help="Input video.")
+    parser.add_argument(
+        "--reference-video",
+        type=Path,
+        help="Optional graded reference video used by every editor in the pool.",
+    )
     parser.add_argument("--instruction", required=True)
     parser.add_argument("--output", type=Path, required=True, help="Grade JSON.")
     runtime = parser.add_mutually_exclusive_group(required=True)
@@ -262,8 +267,29 @@ def main() -> None:
             mcts_seed=configured_runtime.search.seed,
         )
         runtime_manifest = configured_runtime.manifest
+    reference_decoded = None
+    if args.reference_video is not None:
+        progress(f"decoding reference video {args.reference_video}")
+        reference_decoded = decode_video(
+            args.reference_video,
+            max_frames=min(args.max_frames or 96, 96),
+            max_side=analysis_max_side,
+            target_fps=1.0,
+        )
+        progress(
+            "reference video ready "
+            f"frames={len(reference_decoded.frames)} "
+            f"size={reference_decoded.width}x{reference_decoded.height}"
+        )
     progress("running storyboard, grading search, and API critics")
-    result = pipeline.run(decoded.frames, decoded.fps, args.instruction)
+    result = pipeline.run(
+        decoded.frames,
+        decoded.fps,
+        args.instruction,
+        reference_frames=(
+            None if reference_decoded is None else reference_decoded.frames
+        ),
+    )
     progress("pipeline run finished")
     payload = result.to_dict(include_frame_parameters=not args.compact)
     payload["agent_runtime"] = runtime_manifest
@@ -274,6 +300,15 @@ def main() -> None:
         "fps": decoded.fps,
         "frame_count": len(decoded.frames),
     }
+    if reference_decoded is not None:
+        payload["reference_video"] = {
+            "path": str(reference_decoded.source),
+            "width": reference_decoded.width,
+            "height": reference_decoded.height,
+            "fps": reference_decoded.fps,
+            "frame_count": len(reference_decoded.frames),
+            "pool_conditioning": "ordered 8-frame storyboard",
+        }
     if args.video_output_dir is not None:
         progress("preparing video artifacts")
         video_output_dir = args.video_output_dir.resolve()

@@ -551,8 +551,12 @@ class AestheticMCTSSearch:
         hero_reference: Optional[HeroAnchorReference] = None,
     ) -> SearchEvaluation:
         def amplify(values: np.ndarray) -> np.ndarray:
-            upper = np.minimum(PARAMETER_UPPER_BOUNDS, 0.48)
-            lower = np.maximum(PARAMETER_LOWER_BOUNDS, -0.48)
+            external_reference = (
+                hero_reference is not None and hero_reference.frame_index < 0
+            )
+            limit = 0.55 if external_reference else 0.48
+            upper = np.minimum(PARAMETER_UPPER_BOUNDS, limit)
+            lower = np.maximum(PARAMETER_LOWER_BOUNDS, -limit)
             upper[0] = min(PARAMETER_UPPER_BOUNDS[0], 0.65)
             lower[0] = max(PARAMETER_LOWER_BOUNDS[0], -0.65)
             upper[9] = min(PARAMETER_UPPER_BOUNDS[9], 0.55)
@@ -902,12 +906,20 @@ class AestheticMCTSSearch:
                     None,
                 )
             if next_anchor is None:
+                feedback_factor = self._strength_feedback_factor(
+                    best_rejected.critique
+                )
+                if hero_reference is not None and hero_reference.frame_index < 0:
+                    # An external reference video is an explicit request for a
+                    # visible look transfer. Give the pool's critic-feedback
+                    # pass enough range to escape a near-identity proposal.
+                    feedback_factor = max(feedback_factor, 1.50)
                 amplified = self._amplify_evaluation(
                     frames,
                     instruction,
                     shot,
                     best_rejected,
-                    self._strength_feedback_factor(best_rejected.critique),
+                    feedback_factor,
                     hero_reference,
                 )
                 evaluations[(anchors, (*best_rejected.choices, simulations))] = amplified

@@ -8,7 +8,7 @@ from typing import Optional, Sequence
 import numpy as np
 from PIL import Image
 
-from retouch_agent import RetouchExecutor
+from retouch_agent import RetouchExecutor, RetouchParameters
 from retouch_agent.planner import image_statistics
 
 from .backends import (
@@ -251,11 +251,121 @@ class DynamicGradePipeline:
         order = np.argsort(-quality, kind="stable")
         return [candidates[int(index)] for index in order]
 
+    @staticmethod
+    def _reference_video_sheet(
+        frames: Sequence[Image.Image], count: int = 8, cell_side: int = 192
+    ) -> Image.Image:
+        """Represent the full reference video as an ordered visual storyboard."""
+
+        normalized = tuple(frame.convert("RGB") for frame in frames)
+        if not normalized:
+            raise ValueError("Reference video must contain at least one frame.")
+        indices = np.unique(
+            np.linspace(0, len(normalized) - 1, min(count, len(normalized)))
+            .round()
+            .astype(int)
+        )
+        sheet = Image.new("RGB", (cell_side * len(indices), cell_side), "black")
+        for column, index in enumerate(indices):
+            image = normalized[int(index)].copy()
+            image.thumbnail((cell_side, cell_side), Image.Resampling.LANCZOS)
+            x = column * cell_side + (cell_side - image.width) // 2
+            y = (cell_side - image.height) // 2
+            sheet.paste(image, (x, y))
+        return sheet
+
+    def _run_with_external_reference(
+        self,
+        frames: Sequence[Image.Image],
+        instruction: str,
+        storyboard: StoryboardPlan,
+        reference_frames: Sequence[Image.Image],
+    ) -> GradeGraph:
+        """Run the configured editor pool using a user-supplied reference video."""
+
+        reference_sheet = self._reference_video_sheet(reference_frames)
+        reference_instruction = (
+            f"{instruction}\n"
+            "Reference-video requirement: make a clearly visible, strong match "
+            "to the reference video's overall palette, white balance, contrast, "
+            "black level, highlight roll-off, and saturation. Preserve the target "
+            "video's people, objects, geometry, texture, and temporal continuity. "
+            "Do not return a timid near-identity grade."
+        )
+        reference_grade = AnchorGrade(
+            frame_index=-1,
+            parameters=RetouchParameters(),
+            preview=reference_sheet,
+            valid=True,
+            score=1.0,
+            backend="external-reference-video",
+            metadata={
+                "reference_type": "video_storyboard",
+                "sampled_frames": min(8, len(reference_frames)),
+                "source_frame_count": len(reference_frames),
+            },
+        )
+        reference = HeroAnchorReference(
+            frame_index=-1,
+            shot_id=-1,
+            source=reference_sheet,
+            grade=reference_grade,
+        )
+        candidate_grid = self.search.prepopulate_storyboard_candidate_grid(
+            frames,
+            reference_instruction,
+            storyboard.shots,
+            reference,
+        )
+        shot_grades = tuple(
+            self._run_shot(
+                frames,
+                reference_instruction,
+                shot,
+                reference,
+                candidate_grid,
+            )
+            for shot in storyboard.shots
+        )
+        trajectory = np.zeros((len(frames), 12), dtype=np.float64)
+        for grade in shot_grades:
+            trajectory[grade.shot.start_frame : grade.shot.end_frame + 1] = (
+                grade.frame_parameters
+            )
+        audit = {
+            "reference_type": "external_video",
+            "reference_frame_count": len(reference_frames),
+            "accepted_shots": sum(grade.accepted for grade in shot_grades),
+            "total_shots": len(shot_grades),
+            "pool_backends": [backend.name for backend in self.anchor_backends],
+        }
+        return GradeGraph(
+            instruction=instruction,
+            storyboard=storyboard,
+            shots=shot_grades,
+            frame_parameters=trajectory,
+            backend=",".join(backend.name for backend in self.anchor_backends),
+            critic=self.critic.name,
+            orchestrator=f"{self.search.name}+external-reference-video",
+            hero_anchor=HeroAnchorRecord(
+                frame_index=-1,
+                shot_id=-1,
+                parameters=reference_grade.parameters.to_vector(),
+                backend=reference_grade.backend,
+                score=1.0,
+                ranked_candidates=(),
+                selection_reason="user-supplied reference video storyboard",
+                attempts=(audit,),
+            ),
+            hero_anchor_attempts=(audit,),
+        )
+
     def run(
         self,
         frames: Sequence[Image.Image],
         fps: float,
         instruction: str,
+        reference_frames: Optional[Sequence[Image.Image]] = None,
     ) -> GradeGraph:
         normalized = tuple(frame.convert("RGB") for frame in frames)
         if not normalized:
@@ -266,6 +376,13 @@ class DynamicGradePipeline:
             instruction,
             anchors_per_shot=self.anchors_per_shot,
         )
+        if reference_frames is not None:
+            return self._run_with_external_reference(
+                normalized,
+                instruction,
+                storyboard,
+                reference_frames,
+            )
         hero_candidates = list(storyboard.hero_anchor_candidates)
         if storyboard.hero_anchor_frame is not None:
             hero_candidates = [
