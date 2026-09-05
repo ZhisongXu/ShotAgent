@@ -34,6 +34,7 @@ class ReferenceVideoBenchmarkTests(unittest.TestCase):
         result = metrics(target, edited_frames)
         self.assertNotIn("edit_magnitude_delta_e00", result)
         self.assertNotIn("edited_pixel_fraction_delta_e00_gt_2", result)
+        self.assertNotIn("vgg_style_gain", result)
         self.assertNotIn("strong_change_pass", result)
         self.assertNotIn("strong_style_pass", result)
 

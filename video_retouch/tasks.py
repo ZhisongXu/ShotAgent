@@ -369,6 +369,13 @@ stages audit describing the pool behavior. Use each image label's frame_id.
 Keep local_exposure, local_temperature, and local_saturation at 0 because no
 local mask is available.
 
+For reference-video work, diagnosis must include a tone_zone_plan covering
+deep shadows, shadows, midtones, highlights, and speculars; a palette_plan
+covering dominant and secondary hue families plus their relative saturation;
+and an affinity_plan naming edges, local contrast relationships, materials,
+and region boundaries that must remain unchanged. Base those decisions on the
+measured profile embedded in the instruction and verify them against the images.
+
 {hero}Instruction: {instruction}
 Current parameters by frame:
 {json.dumps(current_parameters, ensure_ascii=False)}
@@ -376,7 +383,11 @@ Valid parameter ranges: {parameter_contract()}
 Strength contract: {ASSERTIVE_GRADE_CONTRACT}
 
 Return JSON only:
-{{"anchors":[{{"frame":12,"diagnosis":{{"issues":["..."]}},
+{{"anchors":[{{"frame":12,"diagnosis":{{"issues":["..."],
+"tone_zone_plan":{{"deep_shadows":"...","shadows":"...",
+"midtones":"...","highlights":"...","speculars":"..."}},
+"palette_plan":{{"dominant":"...","secondary":"...",
+"saturation_hierarchy":"..."}},"affinity_plan":["..."]}},
 "parameter_updates":{{"exposure":0.1,"temperature":0.05}},
 "stages":[{{"stage":"lighting","updates":{{"exposure":0.1}},
 "reason":"..."}}],

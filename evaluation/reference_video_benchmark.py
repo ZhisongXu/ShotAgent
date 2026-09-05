@@ -610,7 +610,7 @@ def run_manifest(
             for key in keys
         }
     report = {
-        "schema": "reference-video-grade-benchmark/v5-no-gt",
+        "schema": "reference-video-grade-benchmark/v6-no-gt",
         "dataset": payload.get("dataset"),
         "strength": strength,
         "ranking_policy": {

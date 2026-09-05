@@ -116,9 +116,8 @@ def _anchor_backend(config: object, index: int) -> AnchorRetouchBackend:
             name=name,
             use_mkl_prior=bool(config.get("use_mkl_prior", True)),
             mkl_strength=float(config.get("mkl_strength", 0.35)),
-            mkl_projection_iterations=int(
-                config.get("mkl_projection_iterations", 40)
-            ),
+            mkl_projection_iterations=int(config.get("mkl_projection_iterations", 40)),
+            specialty=str(config.get("specialty", "")),
         )
     if anchor_type == "monet":
         return MonetRetouchBackend(Path(str(config.get("root", ""))), name=name)

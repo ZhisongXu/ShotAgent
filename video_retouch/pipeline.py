@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from typing import Optional, Sequence
 
@@ -20,6 +21,7 @@ from .backends import (
 from .critic import PhotoAgentStyleCritic, ShotCritic
 from .models import GradeGraph, HeroAnchorRecord, ShotGrade, ShotPlan, StoryboardPlan
 from .propagation import BayesianParameterDiffuser
+from .reference_style import build_reference_style_profile
 from .search import AestheticMCTSSearch
 from .shot_planner import HeuristicShotPlanner, ShotPlanner
 
@@ -217,21 +219,13 @@ class DynamicGradePipeline:
             else:
                 label = "neutral_cool"
             buckets.setdefault(label, []).append(shot)
-        return [
-            (label, tuple(group))
-            for label, group in buckets.items()
-            if group
-        ]
+        return [(label, tuple(group)) for label, group in buckets.items() if group]
 
     @classmethod
     def _rank_group_hero_candidates(
         cls, frames: Sequence[Image.Image], shots: Sequence[ShotPlan]
     ) -> list[int]:
-        candidates = [
-            int(frame)
-            for shot in shots
-            for frame in shot.anchor_frames
-        ]
+        candidates = [int(frame) for shot in shots for frame in shot.anchor_frames]
         if not candidates:
             return []
         signatures = np.stack(
@@ -284,13 +278,22 @@ class DynamicGradePipeline:
         """Run the configured editor pool using a user-supplied reference video."""
 
         reference_sheet = self._reference_video_sheet(reference_frames)
+        style_profile = build_reference_style_profile(frames, reference_frames)
         reference_instruction = (
             f"{instruction}\n"
             "Reference-video requirement: make a clearly visible, strong match "
             "to the reference video's overall palette, white balance, contrast, "
             "black level, highlight roll-off, and saturation. Preserve the target "
             "video's people, objects, geometry, texture, and temporal continuity. "
-            "Do not return a timid near-identity grade."
+            "Do not return a timid near-identity grade.\n"
+            "Measured reference-style profile (independent target/reference "
+            "statistics, never pixel correspondence):\n"
+            f"{json.dumps(style_profile, ensure_ascii=False)}\n"
+            "Convert this profile into explicit tone-zone decisions: deep-shadow "
+            "black level and cast, shadow openness and cast, midtone placement, "
+            "highlight neutrality and roll-off, dominant/secondary palette "
+            "weights, and saturation hierarchy. Preserve the ordering of target "
+            "edges, local contrasts, materials, and region boundaries."
         )
         reference_grade = AnchorGrade(
             frame_index=-1,
@@ -303,6 +306,7 @@ class DynamicGradePipeline:
                 "reference_type": "video_storyboard",
                 "sampled_frames": min(8, len(reference_frames)),
                 "source_frame_count": len(reference_frames),
+                "style_profile": style_profile,
             },
         )
         reference = HeroAnchorReference(
@@ -338,6 +342,7 @@ class DynamicGradePipeline:
             "accepted_shots": sum(grade.accepted for grade in shot_grades),
             "total_shots": len(shot_grades),
             "pool_backends": [backend.name for backend in self.anchor_backends],
+            "style_profile": style_profile,
         }
         return GradeGraph(
             instruction=instruction,
@@ -395,9 +400,7 @@ class DynamicGradePipeline:
             ]
         if not hero_candidates:
             hero_candidates = [
-                frame
-                for shot in storyboard.shots
-                for frame in shot.anchor_frames
+                frame for shot in storyboard.shots for frame in shot.anchor_frames
             ]
         hero_candidates = list(dict.fromkeys(hero_candidates))
 
@@ -490,9 +493,9 @@ class DynamicGradePipeline:
                 )
                 trajectory = np.zeros((len(normalized), 12), dtype=np.float64)
                 for grade in shot_grades:
-                    trajectory[
-                        grade.shot.start_frame : grade.shot.end_frame + 1
-                    ] = grade.frame_parameters
+                    trajectory[grade.shot.start_frame : grade.shot.end_frame + 1] = (
+                        grade.frame_parameters
+                    )
                 hero_record = HeroAnchorRecord(
                     frame_index=primary_reference.frame_index,
                     shot_id=primary_reference.shot_id,

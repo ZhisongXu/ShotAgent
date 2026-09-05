@@ -65,8 +65,18 @@ def _validate(payload: dict[str, object], codes: Sequence[str]) -> dict[str, obj
             "candidate_scores must contain every anonymous candidate exactly once"
         )
     scores: dict[str, dict[str, object]] = {}
-    fields = (
-        "reference_style_match",
+    style_fields = (
+        "deep_shadow_black_level_match",
+        "shadow_chroma_match",
+        "midtone_luminance_match",
+        "midtone_palette_match",
+        "highlight_rolloff_match",
+        "neutral_axis_temperature_match",
+        "palette_hierarchy_match",
+        "saturation_hierarchy_match",
+        "local_contrast_depth_match",
+    )
+    diagnostic_fields = (
         "content_preservation",
         "temporal_consistency",
         "artifact_free",
@@ -77,8 +87,12 @@ def _validate(payload: dict[str, object], codes: Sequence[str]) -> dict[str, obj
         if not isinstance(raw, dict):
             raise TypeError(f"{code} score must be an object")
         scores[code] = {
-            field: _score(raw.get(field), f"{code}.{field}") for field in fields
+            field: _score(raw.get(field), f"{code}.{field}")
+            for field in (*style_fields, *diagnostic_fields)
         }
+        scores[code]["reference_style_match"] = float(
+            np.mean([scores[code][field] for field in style_fields])
+        )
         scores[code]["rationale"] = str(raw.get("rationale", ""))[:500]
     return {
         "candidate_scores": scores,
@@ -179,17 +193,27 @@ def main() -> None:
     )
     prompt = """You are an independent evaluator for reference-video controlled color grading with no ground truth.
 
-Judge anonymous candidates only from the supplied ordered storyboards. The TARGET defines content and geometry. The REFERENCE defines abstract grading style: tonal hierarchy, contrast character, palette relationships, color temperature, saturation character, highlight/shadow treatment, and atmosphere. Target and reference depict different content, so do not reward raw object-color or histogram coincidence. Do not reward a candidate merely for making a larger edit.
+Judge anonymous candidates only from the supplied ordered storyboards. The TARGET defines content and geometry. The REFERENCE defines abstract grading style. Target and reference depict different content, so compare relationships and treatment rather than raw object colors or histograms. Do not reward a candidate merely for making a larger edit. Score style similarity independently from content preservation and artifacts: a candidate can match the style yet have poor preservation, and those failures belong in their separate fields.
 
-Give each candidate five scores from 1.0 to 5.0:
-- reference_style_match: transfer of the reference's abstract grading look;
+Give each candidate thirteen scores from 1.0 to 5.0. Judge these nine style fields independently:
+- deep_shadow_black_level_match: floor, crushing/lift and retained near-black separation;
+- shadow_chroma_match: shadow hue bias and chroma, separate from shadow brightness;
+- midtone_luminance_match: middle-gray placement and the amount of open/luminous midtone detail;
+- midtone_palette_match: dominant midtone hue families and specific remapping such as green to olive/taupe;
+- highlight_rolloff_match: shoulder softness, diffuse-highlight brightness and specular containment;
+- neutral_axis_temperature_match: white/gray balance from shadows through highlights, including warm/cool separation;
+- palette_hierarchy_match: dominant versus secondary hue families and their relative visual area, without matching unrelated object colors;
+- saturation_hierarchy_match: which tonal/semantic regions are restrained or emphasized, not merely global saturation;
+- local_contrast_depth_match: microcontrast, haze/clarity and perceived depth while ignoring scene geometry;
+
+Then judge these four diagnostic fields separately:
 - content_preservation: target identity, geometry, texture and plausible materials;
 - temporal_consistency: consistency across the ordered frames, acknowledging that storyboard evidence is limited;
 - artifact_free: no clipping, crushing, halos, banding, unnatural casts or damaged skin/foliage;
 - overall_preference: holistic preference balancing all of the above.
 
-Use the full 1-5 range when evidence warrants it. Identity may preserve content but should score poorly on style if it does not transfer the look. Return JSON only:
-{"candidate_scores":{"C01":{"reference_style_match":0,"content_preservation":0,"temporal_consistency":0,"artifact_free":0,"overall_preference":0,"rationale":"..."}},"review_summary":"..."}
+The evaluator computes reference_style_match as the unweighted mean of the nine style-only fields. Do not return that derived field yourself. Use the full 1-5 range when evidence warrants it. Identity may preserve content but should score poorly on style fields it does not transfer. Return JSON only:
+{"candidate_scores":{"C01":{"deep_shadow_black_level_match":0,"shadow_chroma_match":0,"midtone_luminance_match":0,"midtone_palette_match":0,"highlight_rolloff_match":0,"neutral_axis_temperature_match":0,"palette_hierarchy_match":0,"saturation_hierarchy_match":0,"local_contrast_depth_match":0,"content_preservation":0,"temporal_consistency":0,"artifact_free":0,"overall_preference":0,"rationale":"..."}},"review_summary":"..."}
 Include every supplied candidate code exactly once. Do not guess method identities."""
     client = OpenAIResponsesVisionClient(
         base_url="https://api.openai.com/v1",
@@ -202,10 +226,13 @@ Include every supplied candidate code exactly once. Do not guess method identiti
     )
     result = _validate(client.generate_json(labeled, prompt), codes)
     report = {
-        "schema": "reference-video-blind-mllm-review/v1",
+        "schema": "reference-video-blind-mllm-review/v3",
         "sample": args.sample,
         "judge_model": args.model,
-        "evidence": "8-frame ordered storyboards; development evaluation only",
+        "evidence": (
+            "8-frame ordered storyboards; nine style-only dimensions; "
+            "development evaluation only"
+        ),
         **result,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

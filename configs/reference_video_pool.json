@@ -24,7 +24,7 @@
   },
   "editors": [
     {
-      "name": "reference-palette-editor",
+      "name": "reference-affinity-editor",
       "type": "vision_model",
       "provider": "openai_responses",
       "base_url": "https://api.openai.com/v1",
@@ -33,6 +33,7 @@
       "reasoning_effort": "low",
       "image_detail": "high",
       "stages": ["global_grade"],
+      "specialty": "CAP-inspired but CAP-independent reference transfer: use the measured target/reference profiles to specify separate deep-shadow, shadow, midtone, highlight and specular changes; reproduce dominant/secondary palette weights and saturation ordering; preserve edge order, local contrast relations, material identity and region boundaries. Prefer a visible warm taupe/olive remapping when supported by the reference, with open shadows and soft highlight roll-off. Never use or imitate a baseline output.",
       "use_mkl_prior": true,
       "mkl_strength": 0.7,
       "mkl_projection_iterations": 30,
@@ -48,6 +49,7 @@
       "reasoning_effort": "low",
       "image_detail": "high",
       "stages": ["global_grade"],
+      "specialty": "maximize visible reference-style transfer from the supplied reference storyboard and measured profile; state exact palette-family, tone-zone and saturation-hierarchy gaps, then make a decisive but artifact-safe grade",
       "use_mkl_prior": false,
       "max_output_tokens": 1536
     },
@@ -61,6 +63,7 @@
       "reasoning_effort": "low",
       "image_detail": "high",
       "stages": ["global_grade"],
+      "specialty": "preserve target content affinity, texture, edges, local contrast ordering and temporal coherence while closing the measured reference tone-zone and palette gaps as much as those constraints allow",
       "use_mkl_prior": false,
       "max_output_tokens": 1536
     }

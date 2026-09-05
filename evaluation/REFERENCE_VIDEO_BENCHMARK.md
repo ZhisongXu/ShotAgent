@@ -42,7 +42,6 @@ These metrics diagnose failure modes and never replace the style-match review.
 | Axis | Metric | Direction | Interpretation |
 |---|---|---:|---|
 | Grading | VGG low-level style similarity | higher | Reference-conditioned color/texture feature statistics are closer |
-| Grading | VGG style gain over input | higher | The output moves toward the reference style relative to the ungraded target |
 | Grading | LLM reference-style similarity | higher | An independent blinded vision model rates abstract grading similarity on a normalized 0--1 scale |
 | Content | Local-normalised structure correlation | higher | Geometry and visible texture survive the grade |
 | Content | Edge-SSIM | higher | Edge layout remains intact after the grade |
@@ -69,18 +68,43 @@ frames by default. Install `requirements-evaluation.txt` before the first run;
 the DINO and MUSIQ weights are downloaded once and cached. Pass the
 `vgg_normalised.pth` distributed with SA-LUT using `--style-vgg-weights`.
 
-The two VGG grading metrics compare first- and second-order statistics from
+The VGG grading metric compares first- and second-order statistics from
 low-level feature maps, following the feature-statistics/style-loss family used
-by photorealistic style-transfer work. Style gain normalizes the improvement
-over the ungraded target: zero means no progress toward the reference, positive
-is better, and one is a perfect match in this feature space. These remain
-cross-content proxies, so the blinded reference-style win rate is authoritative.
+by photorealistic style-transfer work. It remains a cross-content proxy, so the
+blinded reference-style win rate is authoritative.
 
 LLM reference-style similarity is the anonymized judge's 1--5
 `reference_style_match` rating normalized to 0--1. The judge sees the target,
 reference, and eight ordered output frames, and is explicitly instructed not to
-reward edit magnitude or raw object-color coincidence. Record the judge model
-and prompt protocol, and report this score separately from VGG similarity.
+reward edit magnitude or raw object-color coincidence. It derives the score as
+the unweighted mean of nine concrete style fields: deep-shadow black level,
+shadow chroma, midtone luminance, midtone palette, highlight roll-off, neutral
+axis/temperature, palette hierarchy, saturation hierarchy, and local
+contrast/depth. Content preservation, temporal consistency, artifacts, and
+overall preference remain separate diagnostics. Record the judge model and
+prompt protocol, and report this score separately from VGG similarity.
+
+## Reference-affinity editor in the API pool
+
+CAP-VSTNet combines a reversible residual representation, whitening/coloring
+of feature statistics, and a Matting-Laplacian training constraint to preserve
+feature and pixel affinity. ShotAgent does not load CAP-VSTNet weights or use
+its output as a prior. Its API pool instead contains a reference-affinity
+editor that receives a deterministic profile measured directly from the two
+input videos:
+
+- seven lightness quantiles and five explicit tone zones;
+- shadow/midtone/highlight Lab bias and chroma;
+- five dominant palette clusters with area weights;
+- chroma quantiles and temporal lightness/chroma dispersion;
+- target-minus-reference deltas without cross-scene pixel correspondence.
+
+The editor must return a tone-zone plan, palette plan, semantic
+correspondences, and an affinity-preservation plan. Two other API editors
+independently propose a stronger style candidate and a detail-preserving
+candidate. The existing metric and visual critics select among them. This
+adapts the useful affinity/statistics ideas to the pool while retaining the
+ShotAgent inference contract: target video plus reference video only.
 
 MUSIQ was trained as a generic image-quality predictor. A cinematic grade may
 intentionally use dark exposure, low contrast, grain or restrained saturation,
@@ -89,21 +113,20 @@ style/overall-preference result.
 
 For ShotAgent candidate selection, non-grading metrics use an approximately
 1% relative tolerance to absorb codec and sampled-model noise. Among candidates
-inside that preservation envelope, select the one with the highest reference
-style gain. On official demo 1, the selected API-Pool result raises VGG style
-gain from 0.0366 to 0.0457 while keeping every non-grading metric within that
-envelope; structure, flow error, edit-warp error, transform drift, and clipping
-are unchanged or improved.
+inside that preservation envelope, select the candidate using VGG and LLM
+reference-style similarity. On official demo 1, the selected API-Pool result
+keeps every non-grading metric within that envelope; structure, flow error,
+edit-warp error, transform drift, and clipping are unchanged or improved.
 
 ## Official demo 1: current objective table
 
-| Paper method | VGG sim. ↑ | LLM sim. ↑ | VGG gain ↑ | Structure ↑ | DINO ↑ | Edge-SSIM ↑ | Flow warp ↓ | Edit warp ↓ | Drift ↓ | New clip ↓ | MUSIQ ↑ |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| SA-LUT: Spatial Adaptive 4D LUT (ICCV 2025) | 0.9032 | 0.125 | -0.2383 | 0.8575 | 0.7526 | 0.7590 | 0.00187 | 0.00193 | 0.01601 | 53.53% | 35.49 |
-| NLUT: Neural 3D LUT for Video PST (2023) | 0.9544 | **0.825** | 0.4165 | 0.9558 | 0.9442 | 0.7537 | 0.00223 | 0.00182 | 0.01348 | 0.00% | 34.57 |
-| CAP-VSTNet (CVPR 2023) | **0.9701** | 0.700 | **0.6175** | 0.8805 | 0.6806 | 0.7645 | 0.00189 | 0.00218 | 0.01743 | 0.00% | **39.59** |
-| CanonCGT (CVPR 2026) | 0.9164 | 0.300 | -0.0685 | 0.9819 | 0.9774 | 0.8320 | 0.00201 | 0.00184 | 0.01546 | 1.83% | 30.37 |
-| **ShotAgent API Editor Pool** | 0.9254 | 0.625 | 0.0457 | **0.9878** | **0.9798** | **0.9183** | 0.00217 | **0.00157** | **0.01145** | **0.00%** | 37.89 |
+| Paper method | VGG sim. ↑ | LLM sim. ↑ | Structure ↑ | DINO ↑ | Edge-SSIM ↑ | Flow warp ↓ | Edit warp ↓ | Drift ↓ | New clip ↓ | MUSIQ ↑ |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| SA-LUT: Spatial Adaptive 4D LUT (ICCV 2025) | 0.9032 | 0.2417 | 0.8575 | 0.7526 | 0.7590 | 0.00187 | 0.00193 | 0.01601 | 53.53% | 35.49 |
+| NLUT: Neural 3D LUT for Video PST (2023) | 0.9544 | 0.8056 | 0.9558 | 0.9442 | 0.7537 | 0.00223 | 0.00182 | 0.01348 | 0.00% | 34.57 |
+| CAP-VSTNet (CVPR 2023) | **0.9701** | **0.8694** | 0.8805 | 0.6806 | 0.7645 | 0.00189 | 0.00218 | 0.01743 | 0.00% | **39.59** |
+| CanonCGT (CVPR 2026) | 0.9164 | 0.3611 | 0.9819 | 0.9774 | 0.8320 | 0.00201 | 0.00184 | 0.01546 | 1.83% | 30.37 |
+| **ShotAgent API Editor Pool** | 0.9254 | 0.5861 | **0.9878** | **0.9798** | **0.9183** | 0.00217 | **0.00157** | **0.01145** | **0.00%** | 37.89 |
 
 This is a diagnostic table rather than a single-score ranking. CAP-VSTNet and
 NLUT move farther toward the reference proxy, while ShotAgent leads the four

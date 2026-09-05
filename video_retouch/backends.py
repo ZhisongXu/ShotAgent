@@ -223,6 +223,7 @@ class VLAnchorBackend:
         use_mkl_prior: bool = True,
         mkl_strength: float = 0.35,
         mkl_projection_iterations: int = 40,
+        specialty: str = "",
     ) -> None:
         if not stages:
             raise ValueError("VL Anchor grading requires at least one stage.")
@@ -236,6 +237,7 @@ class VLAnchorBackend:
         self.use_mkl_prior = bool(use_mkl_prior)
         self.mkl_matcher = LinearMongeKantorovichMatcher(strength=mkl_strength)
         self.mkl_projection_iterations = int(mkl_projection_iterations)
+        self.specialty = str(specialty).strip()
 
     def grade(
         self,
@@ -496,6 +498,8 @@ class VLAnchorBackend:
                 "or attenuate it when it improves the abstract reference palette; "
                 "reject it when cross-content colors or protected regions are harmed."
             )
+        if self.specialty:
+            prompt += f"\nEditor specialty: {self.specialty}"
         payload = self.client.generate_json(labeled_images, prompt)
         raw_anchors = payload.get("anchors", [])
         if not isinstance(raw_anchors, list):
@@ -679,6 +683,8 @@ class VLAnchorBackend:
                     hero_reference.shot_id,
                     mkl_metadata if mkl_preview is not None else None,
                 )
+            if self.specialty:
+                prompt += f"\nEditor specialty: {self.specialty}"
             payload = self.client.generate_json(
                 labeled_images,
                 prompt,

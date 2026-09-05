@@ -182,24 +182,14 @@ class LearnedMetricSuite:
             (left * right).sum() / (left.norm() * right.norm()).clamp_min(1e-8)
         )
 
-    def reference_style_metrics(
+    def reference_style_similarity(
         self,
-        target: Sequence[Image.Image],
         reference: Sequence[Image.Image],
         output: Sequence[Image.Image],
-    ) -> dict[str, float]:
-        target_style = self._style_signature(target)
+    ) -> float:
         reference_style = self._style_signature(reference)
         output_style = self._style_signature(output)
-        source_similarity = self._cosine(target_style, reference_style)
-        output_similarity = self._cosine(output_style, reference_style)
-        gain = (output_similarity - source_similarity) / max(
-            1.0 - source_similarity, 1e-6
-        )
-        return {
-            "vgg_style_similarity": output_similarity,
-            "vgg_style_gain": gain,
-        }
+        return self._cosine(output_style, reference_style)
 
     def evaluate(
         self,
@@ -208,7 +198,7 @@ class LearnedMetricSuite:
         output: Sequence[Image.Image],
     ) -> dict[str, float]:
         return {
-            **self.reference_style_metrics(target, reference, output),
+            "vgg_style_similarity": self.reference_style_similarity(reference, output),
             "dino_content_similarity": self.dino_content_similarity(target, output),
             "musiq_score": self.no_reference_quality(output, "musiq"),
         }
