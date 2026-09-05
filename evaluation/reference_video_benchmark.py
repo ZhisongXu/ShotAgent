@@ -72,6 +72,53 @@ def _pixels(frames: Sequence[Image.Image], sample_count: int = 24) -> np.ndarray
     return values
 
 
+def _matched_lab_samples(
+    left: Sequence[Image.Image],
+    right: Sequence[Image.Image],
+    maximum: int = 20_000,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return deterministic, equally sized Lab samples in normalized units."""
+
+    scale = np.asarray([100.0, 128.0, 128.0], dtype=np.float64)
+    left_pixels = _pixels(left) / scale
+    right_pixels = _pixels(right) / scale
+    count = min(len(left_pixels), len(right_pixels), maximum)
+    left_indices = np.linspace(0, len(left_pixels) - 1, count).astype(np.int64)
+    right_indices = np.linspace(0, len(right_pixels) - 1, count).astype(np.int64)
+    return left_pixels[left_indices], right_pixels[right_indices]
+
+
+def lab_wasserstein_distance(
+    output: Sequence[Image.Image], reference: Sequence[Image.Image]
+) -> float:
+    """Mean 1-D Wasserstein distance over normalized L, a, and b channels."""
+
+    output_pixels, reference_pixels = _matched_lab_samples(output, reference)
+    channel_distances = []
+    for channel in range(3):
+        left = np.sort(output_pixels[:, channel])
+        right = np.sort(reference_pixels[:, channel])
+        channel_distances.append(float(np.mean(np.abs(left - right))))
+    return float(np.mean(channel_distances))
+
+
+def lab_sliced_wasserstein_distance(
+    output: Sequence[Image.Image],
+    reference: Sequence[Image.Image],
+    projection_count: int = 64,
+    seed: int = 7,
+) -> float:
+    """Sliced Wasserstein distance over the joint normalized Lab distribution."""
+
+    output_pixels, reference_pixels = _matched_lab_samples(output, reference)
+    generator = np.random.default_rng(seed)
+    directions = generator.normal(size=(3, projection_count))
+    directions /= np.linalg.norm(directions, axis=0, keepdims=True).clip(1e-12)
+    output_projections = np.sort(output_pixels @ directions, axis=0)
+    reference_projections = np.sort(reference_pixels @ directions, axis=0)
+    return float(np.mean(np.abs(output_projections - reference_projections)))
+
+
 def _reinhard_fit(
     source: np.ndarray, reference: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -367,6 +414,13 @@ def metrics(
         "new_shadow_clip_fraction": max(0.0, shadow_clip - source_shadow_clip),
         "new_highlight_clip_fraction": max(0.0, highlight_clip - source_highlight_clip),
     }
+    if reference is not None:
+        values["lab_wasserstein_distance"] = lab_wasserstein_distance(
+            output, reference.frames
+        )
+        values["lab_sliced_wasserstein_distance"] = lab_sliced_wasserstein_distance(
+            output, reference.frames
+        )
     if learned_suite is not None:
         if reference is None:
             raise ValueError(
@@ -610,7 +664,7 @@ def run_manifest(
             for key in keys
         }
     report = {
-        "schema": "reference-video-grade-benchmark/v6-no-gt",
+        "schema": "reference-video-grade-benchmark/v7-no-gt",
         "dataset": payload.get("dataset"),
         "strength": strength,
         "ranking_policy": {

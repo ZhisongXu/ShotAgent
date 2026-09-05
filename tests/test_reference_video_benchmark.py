@@ -6,6 +6,8 @@ from PIL import Image
 from evaluation.reference_video_benchmark import (
     VideoData,
     global_reinhard,
+    lab_sliced_wasserstein_distance,
+    lab_wasserstein_distance,
     metrics,
 )
 
@@ -52,6 +54,25 @@ class ReferenceVideoBenchmarkTests(unittest.TestCase):
         result = global_reinhard(target, reference, 0.8)
         self.assertEqual(len(result), len(target.frames))
         self.assertTrue(all(frame.size == target.frames[0].size for frame in result))
+
+    def test_lab_distribution_distances_are_zero_for_identical_videos(self) -> None:
+        reference = _video((120, 90, 60))
+
+        self.assertAlmostEqual(
+            lab_wasserstein_distance(reference.frames, reference.frames), 0.0
+        )
+        self.assertAlmostEqual(
+            lab_sliced_wasserstein_distance(reference.frames, reference.frames), 0.0
+        )
+
+    def test_lab_distribution_distances_detect_a_color_shift(self) -> None:
+        output = _video((30, 90, 45))
+        reference = _video((160, 110, 70))
+
+        self.assertGreater(lab_wasserstein_distance(output.frames, reference.frames), 0)
+        self.assertGreater(
+            lab_sliced_wasserstein_distance(output.frames, reference.frames), 0
+        )
 
 
 if __name__ == "__main__":

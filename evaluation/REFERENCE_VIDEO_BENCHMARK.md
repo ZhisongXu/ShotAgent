@@ -43,6 +43,8 @@ These metrics diagnose failure modes and never replace the style-match review.
 |---|---|---:|---|
 | Grading | VGG low-level style similarity | higher | Reference-conditioned color/texture feature statistics are closer |
 | Grading | LLM reference-style similarity | higher | An independent blinded vision model rates abstract grading similarity on a normalized 0--1 scale |
+| Grading | Lab channel Wasserstein | lower | Mean marginal distribution distance over normalized L, a and b |
+| Grading | Lab sliced Wasserstein (SWD) | lower | Joint Lab distribution distance averaged over 64 fixed projections |
 | Content | Local-normalised structure correlation | higher | Geometry and visible texture survive the grade |
 | Content | Edge-SSIM | higher | Edge layout remains intact after the grade |
 | Content | DINOv2 cosine similarity | higher | Learned semantic/structural features remain close to the input |
@@ -72,6 +74,14 @@ The VGG grading metric compares first- and second-order statistics from
 low-level feature maps, following the feature-statistics/style-loss family used
 by photorealistic style-transfer work. It remains a cross-content proxy, so the
 blinded reference-style win rate is authoritative.
+
+Lab Wasserstein and Lab SWD use deterministic samples from output and reference
+frames. Both operate in normalized Lab units. The channel metric averages three
+one-dimensional Wasserstein distances; SWD averages 64 one-dimensional
+Wasserstein distances after fixed random projections of the joint Lab vectors.
+Lower is closer. Because target and reference depict different content, both
+remain palette-distribution diagnostics and cannot establish style correctness
+by themselves.
 
 LLM reference-style similarity is the anonymized judge's 1--5
 `reference_style_match` rating normalized to 0--1. The judge sees the target,
@@ -125,13 +135,13 @@ edit-warp error, transform drift, and clipping are unchanged or improved.
 
 ## Official demo 1: current objective table
 
-| Paper method | VGG sim. ↑ | LLM sim. ↑ | Structure ↑ | DINO ↑ | Edge-SSIM ↑ | Flow warp ↓ | Edit warp ↓ | Drift ↓ | New clip ↓ | MUSIQ ↑ |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| SA-LUT: Spatial Adaptive 4D LUT (ICCV 2025) | 0.9032 | 0.2250 | 0.8575 | 0.7526 | 0.7590 | **0.00187** | 0.00193 | 0.01601 | 53.53% | 35.49 |
-| NLUT: Neural 3D LUT for Video PST (2023) | 0.9544 | 0.7333 | 0.9558 | 0.9442 | 0.7537 | 0.00223 | 0.00182 | 0.01348 | 0.00% | 34.57 |
-| CAP-VSTNet (CVPR 2023) | **0.9701** | **0.8500** | 0.8805 | 0.6806 | 0.7645 | 0.00189 | 0.00218 | 0.01743 | 0.00% | **39.59** |
-| CanonCGT (CVPR 2026) | 0.9164 | 0.3306 | 0.9819 | 0.9774 | 0.8320 | 0.00201 | 0.00184 | 0.01546 | 1.83% | 30.37 |
-| **ShotAgent API Editor Pool** | 0.9300 | **0.7889** | **0.9933** | **0.9835** | **0.9425** | 0.00224 | **0.00099** | **0.00537** | **0.00%** | 38.92 |
+| Paper method | VGG sim. ↑ | LLM sim. ↑ | Lab W₁ ↓ | Lab SWD ↓ | Structure ↑ | DINO ↑ | Edge-SSIM ↑ | Flow warp ↓ | Edit warp ↓ | Drift ↓ | New clip ↓ | MUSIQ ↑ |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| SA-LUT: Spatial Adaptive 4D LUT (ICCV 2025) | 0.9032 | 0.2250 | 0.09943 | 0.11797 | 0.8575 | 0.7526 | 0.7590 | **0.00187** | 0.00193 | 0.01601 | 53.53% | 35.49 |
+| NLUT: Neural 3D LUT for Video PST (2023) | 0.9544 | 0.7333 | **0.03847** | **0.04567** | 0.9558 | 0.9442 | 0.7537 | 0.00223 | 0.00182 | 0.01348 | 0.00% | 34.57 |
+| CAP-VSTNet (CVPR 2023) | **0.9701** | **0.8500** | 0.03885 | 0.05038 | 0.8805 | 0.6806 | 0.7645 | 0.00189 | 0.00218 | 0.01743 | 0.00% | **39.59** |
+| CanonCGT (CVPR 2026) | 0.9164 | 0.3306 | 0.08636 | 0.10236 | 0.9819 | 0.9774 | 0.8320 | 0.00201 | 0.00184 | 0.01546 | 1.83% | 30.37 |
+| **ShotAgent API Editor Pool** | 0.9300 | **0.7889** | 0.04398 | 0.05492 | **0.9933** | **0.9835** | **0.9425** | 0.00224 | **0.00099** | **0.00537** | **0.00%** | 38.92 |
 
 This is a diagnostic table rather than a single-score ranking. CAP-VSTNet and
 NLUT lead VGG similarity, while ShotAgent ranks second in the detailed LLM
@@ -141,7 +151,7 @@ comes from the blinded video review.
 
 ## Metrics excluded from the main table
 
-Do not use raw RGB/Lab histogram distance, histogram correlation, Lab EMD,
+Do not use raw RGB/Lab histogram distance or histogram correlation,
 CLIP-T, CLIP directional similarity, CLIP-IQA, input-to-output Delta-E,
 output-to-reference SSIM/LPIPS/Delta-E, or changed-pixel fraction in this
 benchmark. With unrelated target/reference
