@@ -5,7 +5,6 @@ from PIL import Image
 
 from evaluation.reference_video_benchmark import (
     VideoData,
-    _delta_e_ciede2000,
     global_reinhard,
     metrics,
 )
@@ -22,7 +21,7 @@ def _video(color: tuple[int, int, int], frames: int = 3) -> VideoData:
 
 
 class ReferenceVideoBenchmarkTests(unittest.TestCase):
-    def test_edit_magnitude_is_descriptive_without_quality_gate(self) -> None:
+    def test_metrics_do_not_include_edit_strength_or_quality_gates(self) -> None:
         target = _video((40, 80, 120))
         edited_frames = tuple(
             Image.fromarray(
@@ -33,25 +32,18 @@ class ReferenceVideoBenchmarkTests(unittest.TestCase):
             for frame in target.frames
         )
         result = metrics(target, edited_frames)
-        self.assertGreater(result["edit_magnitude_delta_e00"], 0.0)
+        self.assertNotIn("edit_magnitude_delta_e00", result)
+        self.assertNotIn("edited_pixel_fraction_delta_e00_gt_2", result)
         self.assertNotIn("strong_change_pass", result)
         self.assertNotIn("strong_style_pass", result)
 
-    def test_identity_has_zero_edit_and_perfect_structure_preservation(self) -> None:
+    def test_identity_has_perfect_structure_preservation(self) -> None:
         target = _video((40, 80, 120))
         result = metrics(target, target.frames)
-        self.assertAlmostEqual(result["edit_magnitude_delta_e00"], 0.0, places=8)
         self.assertAlmostEqual(result["content_structure_correlation"], 1.0, places=8)
         self.assertAlmostEqual(result["edge_ssim"], 1.0, places=8)
         self.assertGreaterEqual(result["temporal_flow_warp_error"], 0.0)
         self.assertAlmostEqual(result["temporal_transform_drift"], 0.0, places=8)
-
-    def test_ciede2000_matches_published_reference_pair(self) -> None:
-        left = np.array([[50.0, 2.6772, -79.7751]])
-        right = np.array([[50.0, 0.0, -82.7485]])
-        self.assertAlmostEqual(
-            float(_delta_e_ciede2000(left, right)[0]), 2.0425, places=4
-        )
 
     def test_global_reinhard_preserves_frame_contract(self) -> None:
         target = _video((30, 60, 90))

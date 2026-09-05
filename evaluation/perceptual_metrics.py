@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from contextlib import nullcontext
+from pathlib import Path
 
 import numpy as np
 from PIL import Image
@@ -18,9 +19,14 @@ def _indices(length: int, count: int) -> np.ndarray:
 
 
 class LearnedMetricSuite:
-    """CLIP, DINOv2 and no-reference IQA metrics sampled over video frames."""
+    """Reference-style, DINOv2, and MUSIQ metrics sampled over video frames."""
 
-    def __init__(self, frame_count: int = 8, device: str | None = None) -> None:
+    def __init__(
+        self,
+        frame_count: int = 8,
+        device: str | None = None,
+        style_vgg_weights: Path | None = None,
+    ) -> None:
         import torch
 
         self.torch = torch
@@ -28,6 +34,8 @@ class LearnedMetricSuite:
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self._dino = None
         self._dino_preprocess = None
+        self.style_vgg_weights = style_vgg_weights
+        self._style_vgg = None
         self._iqa: dict[str, object] = {}
 
     def _autocast(self):
@@ -105,13 +113,102 @@ class LearnedMetricSuite:
                 scores.append(float(model(tensor).reshape(-1).mean()))
         return float(np.mean(scores))
 
+    def _load_style_vgg(self) -> None:
+        if self._style_vgg is not None:
+            return
+        if self.style_vgg_weights is None:
+            raise ValueError(
+                "VGG style metrics require --style-vgg-weights. The compatible "
+                "vgg_normalised.pth is distributed with SA-LUT/PST models."
+            )
+        nn = self.torch.nn
+        model = nn.Sequential(
+            nn.Conv2d(3, 3, 1),
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(3, 64, 3),
+            nn.ReLU(),
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(64, 64, 3),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2, ceil_mode=True),
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(64, 128, 3),
+            nn.ReLU(),
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(128, 128, 3),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2, ceil_mode=True),
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(128, 256, 3),
+            nn.ReLU(),
+        )
+        state = self.torch.load(
+            self.style_vgg_weights, map_location="cpu", weights_only=False
+        )
+        prefix = model.state_dict()
+        compatible = {key: state[key] for key in prefix if key in state}
+        if compatible.keys() != prefix.keys():
+            missing = sorted(prefix.keys() - compatible.keys())
+            raise ValueError(f"Incompatible VGG style weights; missing keys: {missing}")
+        model.load_state_dict(compatible)
+        self._style_vgg = model.eval().to(self.device)
+
+    def _style_signature(self, frames: Sequence[Image.Image]):
+        from torchvision.transforms.functional import pil_to_tensor, resize
+
+        self._load_style_vgg()
+        sampled = self._sample(frames)
+        batch = self.torch.stack(
+            [pil_to_tensor(frame).float().div(255.0) for frame in sampled]
+        ).to(self.device)
+        batch = resize(batch, [224, 224], antialias=True)
+        capture = {3, 6, 10, 13, 17}
+        statistics = []
+        with self.torch.inference_mode(), self._autocast():
+            feature = batch
+            for index, layer in enumerate(self._style_vgg):
+                feature = layer(feature)
+                if index in capture:
+                    flat = feature.float().flatten(2)
+                    mean = flat.mean(dim=2).mean(dim=0)
+                    std = flat.std(dim=2, correction=0).mean(dim=0)
+                    for vector in (mean, std):
+                        statistics.append(vector / vector.norm().clamp_min(1e-8))
+        return self.torch.cat(statistics)
+
+    @staticmethod
+    def _cosine(left, right) -> float:
+        return float(
+            (left * right).sum() / (left.norm() * right.norm()).clamp_min(1e-8)
+        )
+
+    def reference_style_metrics(
+        self,
+        target: Sequence[Image.Image],
+        reference: Sequence[Image.Image],
+        output: Sequence[Image.Image],
+    ) -> dict[str, float]:
+        target_style = self._style_signature(target)
+        reference_style = self._style_signature(reference)
+        output_style = self._style_signature(output)
+        source_similarity = self._cosine(target_style, reference_style)
+        output_similarity = self._cosine(output_style, reference_style)
+        gain = (output_similarity - source_similarity) / max(
+            1.0 - source_similarity, 1e-6
+        )
+        return {
+            "vgg_style_similarity": output_similarity,
+            "vgg_style_gain": gain,
+        }
+
     def evaluate(
         self,
         target: Sequence[Image.Image],
+        reference: Sequence[Image.Image],
         output: Sequence[Image.Image],
     ) -> dict[str, float]:
         return {
+            **self.reference_style_metrics(target, reference, output),
             "dino_content_similarity": self.dino_content_similarity(target, output),
             "musiq_score": self.no_reference_quality(output, "musiq"),
-            "clipiqa_score": self.no_reference_quality(output, "clipiqa"),
         }

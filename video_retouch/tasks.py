@@ -37,6 +37,11 @@ should usually land around 0.10-0.35 in magnitude; only use 0.35-0.45 when the
 shot clearly benefits from a stronger fantasy/commercial look. Preserve
 highlight texture and believable colors by balancing stronger style with
 protection, not by collapsing the look back toward zero.
+When the instruction explicitly asks for a strong reference match, make the
+reference's white balance, palette separation, and saturation hierarchy clearly
+visible. Chromatic controls may reach 0.35-0.48 when supported by the reference,
+even on a dark source; protect shadow detail with tonal controls instead of
+weakening the color transformation.
 """.strip()
 
 
@@ -247,7 +252,7 @@ def anchor_grade_prompt(
     current_parameters: dict[str, float],
 ) -> str:
     stage_instruction = (
-        "At stage \"global_grade\", choose all relevant global parameters in one "
+        'At stage "global_grade", choose all relevant global parameters in one '
         "pass across exposure, white balance, contrast, highlights, shadows, "
         "saturation, vibrance, and tone curve."
         if stage == "global_grade"
@@ -283,7 +288,7 @@ def anchor_match_prompt(
     mkl_prior: dict[str, object] | None = None,
 ) -> str:
     stage_instruction = (
-        "At stage \"global_grade\", choose all relevant global matching "
+        'At stage "global_grade", choose all relevant global matching '
         "parameters in one pass across exposure, white balance, contrast, "
         "highlights, shadows, saturation, vibrance, and tone curve."
         if stage == "global_grade"

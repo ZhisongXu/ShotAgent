@@ -1,6 +1,5 @@
 import unittest
 
-import numpy as np
 import torch
 
 from retouch_agent.executor import RetouchExecutor
@@ -28,6 +27,15 @@ class RetouchExecutorTest(unittest.TestCase):
         output = self.executor.apply_vector(self.image, parameters)
         torch.testing.assert_close(output[0], output[1], atol=1e-6, rtol=0.0)
         torch.testing.assert_close(output[1], output[2], atol=1e-6, rtol=0.0)
+
+    def test_white_balance_preserves_linear_luminance(self) -> None:
+        linear = self.executor.srgb_to_linear(self.image.unsqueeze(0))
+        temperature = torch.tensor([[[[0.48]]]])
+        tint = torch.tensor([[[[0.32]]]])
+        balanced = self.executor._white_balance(linear, temperature, tint)
+        before = self.executor._luminance(linear)
+        after = self.executor._luminance(balanced)
+        torch.testing.assert_close(after, before, atol=2e-7, rtol=2e-6)
 
     def test_local_adjustment_only_changes_masked_region(self) -> None:
         image = torch.full((3, 20, 20), 0.25)

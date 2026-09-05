@@ -67,6 +67,17 @@
   ],
   "evaluators": [
     {
+      "name": "preservation-metrics",
+      "type": "metrics",
+      "maximum_fidelity_l1": 0.22,
+      "maximum_clipping": 0.08,
+      "maximum_temporal_error": 0.03,
+      "maximum_parameter_jerk": 0.10,
+      "maximum_anchor_error": 0.10,
+      "weight": 1.0,
+      "veto": true
+    },
+    {
       "name": "reference-video-visual-critic",
       "type": "vision_model",
       "provider": "openai_responses",
@@ -75,7 +86,7 @@
       "api_key_env": "OPENAI_API_KEY",
       "reasoning_effort": "low",
       "image_detail": "high",
-      "focus": "strong visible reference-video look match, preserved subject identity and texture, open shadow detail, smooth highlights, natural skin and foliage, and temporal coherence",
+      "focus": "strong visible reference-video palette match, including white balance, warm/cool separation, restrained green dominance, tonal hierarchy, preserved subject identity and texture, clean shadow detail, smooth highlights, natural skin and foliage, and temporal coherence; reject gray haze and weak near-neutral color changes",
       "weight": 1.0,
       "veto": false,
       "accept_on_score": true

@@ -41,6 +41,8 @@ These metrics diagnose failure modes and never replace the style-match review.
 
 | Axis | Metric | Direction | Interpretation |
 |---|---|---:|---|
+| Grading | VGG low-level style similarity | higher | Reference-conditioned color/texture feature statistics are closer |
+| Grading | VGG style gain over input | higher | The output moves toward the reference style relative to the ungraded target |
 | Content | Local-normalised structure correlation | higher | Geometry and visible texture survive the grade |
 | Content | Edge-SSIM | higher | Edge layout remains intact after the grade |
 | Content | DINOv2 cosine similarity | higher | Learned semantic/structural features remain close to the input |
@@ -48,7 +50,6 @@ These metrics diagnose failure modes and never replace the style-match review.
 | Temporal | Cut-masked edit warping error | lower | The edit does not add motion-compensated flicker |
 | Temporal | Cut-masked temporal style drift | lower | The applied tonal/color signature does not jump between adjacent frames |
 | Quality | MUSIQ | higher | Generic no-reference image quality on sampled frames |
-| Quality | CLIP-IQA | higher | CLIP-based no-reference image quality on sampled frames |
 | Artifacts | New shadow clipping | lower | The method does not introduce crushed black pixels |
 | Artifacts | New highlight clipping | lower | The method does not introduce clipped white pixels |
 
@@ -59,35 +60,55 @@ legitimate exposure and tone-curve changes even when geometry was unchanged.
 All temporal metrics exclude detected shot boundaries. Warping error is still
 limited by optical-flow accuracy, so temporal transform drift is reported
 beside it rather than hidden inside a composite score. Transform drift fits a
-small Lab affine transform to each input/output frame pair and measures how
+small global color transform to each input/output frame pair and measures how
 much those fitted coefficients jump between adjacent frames.
 
 The learned metrics are enabled with `--learned-metrics` and use eight sampled
 frames by default. Install `requirements-evaluation.txt` before the first run;
-the model weights are downloaded once and cached.
+the DINO and MUSIQ weights are downloaded once and cached. Pass the
+`vgg_normalised.pth` distributed with SA-LUT using `--style-vgg-weights`.
 
-MUSIQ and CLIP-IQA were trained as generic image-quality predictors. A cinematic
-grade may intentionally use dark exposure, low contrast, grain or restrained
-saturation, so these scores are reported separately and must not override the
-blinded style/overall-preference result.
+The two VGG grading metrics compare first- and second-order statistics from
+low-level feature maps, following the feature-statistics/style-loss family used
+by photorealistic style-transfer work. Style gain normalizes the improvement
+over the ungraded target: zero means no progress toward the reference, positive
+is better, and one is a perfect match in this feature space. These remain
+cross-content proxies, so the blinded reference-style win rate is authoritative.
 
-## Edit magnitude is a descriptor
+MUSIQ was trained as a generic image-quality predictor. A cinematic grade may
+intentionally use dark exposure, low contrast, grain or restrained saturation,
+so this score is reported separately and must not override the blinded
+style/overall-preference result.
 
-`edit_magnitude_delta_e00` and the fraction of pixels with Delta-E00 above 2
-describe how far the output moved from its input. They have **no better
-direction**, no pass threshold and no weight in any score. A small edit can be
-correct for a subtle reference; a large edit can be correct for a stylised
-reference or wrong because of an excessive cast.
+For ShotAgent candidate selection, non-grading metrics use an approximately
+1% relative tolerance to absorb codec and sampled-model noise. Among candidates
+inside that preservation envelope, select the one with the highest reference
+style gain. On official demo 1, the selected API-Pool result raises VGG style
+gain from 0.0366 to 0.0457 while keeping every non-grading metric within that
+envelope; structure, flow error, edit-warp error, transform drift, and clipping
+are unchanged or improved.
 
-If analysis by strength is useful, define bins after collecting results and
-report each method's win rate inside those bins. Never award points merely for
-landing in a stronger bin.
+## Official demo 1: current objective table
+
+| Paper method | VGG style sim. ↑ | VGG style gain ↑ | Structure ↑ | DINO ↑ | Edge-SSIM ↑ | Flow warp ↓ | Edit warp ↓ | Drift ↓ | New clip ↓ | MUSIQ ↑ |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| SA-LUT: Spatial Adaptive 4D LUT (ICCV 2025) | 0.9032 | -0.2383 | 0.8575 | 0.7526 | 0.7590 | 0.00187 | 0.00193 | 0.01601 | 53.53% | 35.49 |
+| NLUT: Neural 3D LUT for Video PST (2023) | 0.9544 | 0.4165 | 0.9558 | 0.9442 | 0.7537 | 0.00223 | 0.00182 | 0.01348 | 0.00% | 34.57 |
+| CAP-VSTNet (CVPR 2023) | 0.9701 | 0.6175 | 0.8805 | 0.6806 | 0.7645 | 0.00189 | 0.00218 | 0.01743 | 0.00% | 39.59 |
+| CanonCGT (CVPR 2026) | 0.9164 | -0.0685 | 0.9819 | 0.9774 | 0.8320 | 0.00201 | 0.00184 | 0.01546 | 1.83% | 30.37 |
+| **ShotAgent API Editor Pool** | **0.9254** | **0.0457** | **0.9878** | **0.9798** | **0.9183** | 0.00217 | **0.00157** | **0.01145** | **0.00%** | **37.89** |
+
+This is a diagnostic table rather than a single-score ranking. CAP-VSTNet and
+NLUT move farther toward the reference proxy, while ShotAgent leads the four
+graded methods on structure, DINO, Edge-SSIM, edit stability, transform drift,
+and clipping. Formal style ranking still comes from the blinded video review.
 
 ## Metrics excluded from the main table
 
 Do not use raw RGB/Lab histogram distance, histogram correlation, Lab EMD,
-CLIP-T, CLIP directional similarity, output-to-reference SSIM/LPIPS/Delta-E, or
-changed-pixel fraction in this benchmark. With unrelated target/reference
+CLIP-T, CLIP directional similarity, CLIP-IQA, input-to-output Delta-E,
+output-to-reference SSIM/LPIPS/Delta-E, or changed-pixel fraction in this
+benchmark. With unrelated target/reference
 content, these quantities are dominated by scene semantics or color
 composition. BRISQUE and NIQE may be included in an appendix but are not
 reliable arbiters of intentional cinematic looks.
@@ -120,7 +141,8 @@ python -m evaluation.reference_video_benchmark \
   --output-dir outputs/reference_video_eval/demo1_results_perceptual \
   --methods identity global-reinhard global-mkl framewise-reinhard \
   --external shotagent-pool=outputs/reference_video_eval/shotagent_visual_outputs \
-  --learned-metrics --learned-frame-count 8
+  --learned-metrics --learned-frame-count 8 \
+  --style-vgg-weights /path/to/vgg_normalised.pth
 ```
 
 ## Modern reference-style baselines
@@ -178,5 +200,5 @@ extensions with equivalent PyTorch implementations. All four adapters load the
 published weights and preserve the released inference logic. Record any
 resolution or memory adaptation beside the result.
 
-The report schema is `reference-video-grade-benchmark/v4-no-gt`. It explicitly
-records that edit magnitude is descriptive and that no composite score exists.
+The report schema is `reference-video-grade-benchmark/v5-no-gt`. It explicitly
+records that no composite score exists.

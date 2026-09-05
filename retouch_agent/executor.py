@@ -56,7 +56,9 @@ class RetouchExecutor:
         return image, squeeze
 
     @staticmethod
-    def _prepare_parameters(parameters: Tensor, batch_size: int, device, dtype) -> Tensor:
+    def _prepare_parameters(
+        parameters: Tensor, batch_size: int, device, dtype
+    ) -> Tensor:
         parameters = torch.as_tensor(parameters, device=device, dtype=dtype)
         if parameters.ndim == 1:
             parameters = parameters.unsqueeze(0)
@@ -94,7 +96,12 @@ class RetouchExecutor:
         green = torch.exp(-0.16 * tint)
         blue = torch.exp(-0.28 * temperature + 0.10 * tint)
         gains = torch.cat([red, green, blue], dim=1)
-        return linear * gains
+        balanced = linear * gains
+        weights = linear.new_tensor([0.2126, 0.7152, 0.0722])[None, :, None, None]
+        source_luminance = (linear * weights).sum(dim=1, keepdim=True)
+        balanced_luminance = (balanced * weights).sum(dim=1, keepdim=True)
+        luminance_scale = source_luminance / balanced_luminance.clamp_min(1e-8)
+        return balanced * luminance_scale
 
     def _global_edit(self, image: Tensor, p: Tensor) -> Tensor:
         def value(index: int) -> Tensor:
@@ -107,7 +114,9 @@ class RetouchExecutor:
         luminance = self._luminance(linear).clamp(0.0, 1.0)
         highlight_weight = luminance.square()
         shadow_weight = (1.0 - luminance).square()
-        scale = 1.0 + 0.55 * value(4) * highlight_weight + 0.55 * value(5) * shadow_weight
+        scale = (
+            1.0 + 0.55 * value(4) * highlight_weight + 0.55 * value(5) * shadow_weight
+        )
         linear = linear * scale.clamp_min(0.05)
 
         contrast_factor = torch.pow(linear.new_tensor(2.0), value(3))
@@ -120,8 +129,12 @@ class RetouchExecutor:
         saturation_factor = (1.0 + value(6)).clamp(0.0, 2.0)
         srgb = luma + saturation_factor * (srgb - luma)
 
-        channel_spread = srgb.max(dim=1, keepdim=True).values - srgb.min(dim=1, keepdim=True).values
-        vibrance_factor = (1.0 + value(7) * (1.0 - channel_spread.clamp(0.0, 1.0))).clamp(0.0, 2.0)
+        channel_spread = (
+            srgb.max(dim=1, keepdim=True).values - srgb.min(dim=1, keepdim=True).values
+        )
+        vibrance_factor = (
+            1.0 + value(7) * (1.0 - channel_spread.clamp(0.0, 1.0))
+        ).clamp(0.0, 2.0)
         return luma + vibrance_factor * (srgb - luma)
 
     def _local_edit(self, image: Tensor, p: Tensor) -> Tensor:
@@ -184,7 +197,9 @@ class RetouchExecutor:
                 torch.from_numpy(parameters.to_vector(np.float32)),
                 mask=mask_tensor,
             )
-            output = (result.permute(1, 2, 0).detach().cpu().numpy() * 255.0 + 0.5).astype(np.uint8)
+            output = (
+                result.permute(1, 2, 0).detach().cpu().numpy() * 255.0 + 0.5
+            ).astype(np.uint8)
             return Image.fromarray(output, mode="RGB")
 
         if isinstance(image, np.ndarray):

@@ -152,8 +152,11 @@ def _apply_assertive_style_floor(
 ) -> dict[str, float]:
     adjusted = dict(values)
     key_names = tuple(STYLE_STRENGTH_GUARDRAILS["preferred_defaults"])
-    soft_cap = float(STYLE_STRENGTH_GUARDRAILS["soft_cap"])
-    hard_cap = float(STYLE_STRENGTH_GUARDRAILS["hard_cap"])
+    default_soft_cap = float(STYLE_STRENGTH_GUARDRAILS["soft_cap"])
+    default_hard_cap = float(STYLE_STRENGTH_GUARDRAILS["hard_cap"])
+    tonal_names = {"contrast", "highlights", "shadows", "tone_curve"}
+    tonal_soft_cap = default_soft_cap
+    tonal_hard_cap = default_hard_cap
     minimum_key = float(STYLE_STRENGTH_GUARDRAILS["minimum_key_parameter"])
     minimum_l1 = float(STYLE_STRENGTH_GUARDRAILS["minimum_global_l1"])
     stats = image_statistics(image) if image is not None else None
@@ -162,8 +165,8 @@ def _apply_assertive_style_floor(
         contrast = float(stats["contrast"])
         saturation = float(stats["saturation"])
         if luminance < 0.24:
-            soft_cap = min(soft_cap, 0.26)
-            hard_cap = min(hard_cap, 0.34)
+            tonal_soft_cap = min(tonal_soft_cap, 0.26)
+            tonal_hard_cap = min(tonal_hard_cap, 0.34)
             adjusted["contrast"] = min(float(adjusted.get("contrast", 0.0)), 0.20)
             adjusted["tone_curve"] = min(float(adjusted.get("tone_curve", 0.0)), 0.22)
             adjusted["highlights"] = max(float(adjusted.get("highlights", 0.0)), -0.16)
@@ -182,16 +185,23 @@ def _apply_assertive_style_floor(
             adjusted["vibrance"] = min(float(adjusted.get("vibrance", 0.0)), 0.24)
     for name in key_names:
         current = float(adjusted.get(name, 0.0))
+        soft_cap = tonal_soft_cap if name in tonal_names else default_soft_cap
+        hard_cap = tonal_hard_cap if name in tonal_names else default_hard_cap
         if abs(current) > hard_cap:
             adjusted[name] = float(np.sign(current) * hard_cap)
         elif abs(current) > soft_cap:
             adjusted[name] = float(np.sign(current) * soft_cap)
     key_values = np.asarray([float(adjusted.get(name, 0.0)) for name in key_names])
-    if np.max(np.abs(key_values)) < minimum_key or np.sum(np.abs(key_values)) < minimum_l1:
+    if (
+        np.max(np.abs(key_values)) < minimum_key
+        or np.sum(np.abs(key_values)) < minimum_l1
+    ):
         for name, default in STYLE_STRENGTH_GUARDRAILS["preferred_defaults"].items():
             current = float(adjusted.get(name, 0.0))
             if abs(current) < abs(default):
-                adjusted[name] = float(default if current == 0.0 else np.sign(current) * abs(default))
+                adjusted[name] = float(
+                    default if current == 0.0 else np.sign(current) * abs(default)
+                )
     adjusted["local_exposure"] = 0.0
     adjusted["local_temperature"] = 0.0
     adjusted["local_saturation"] = 0.0
@@ -411,9 +421,7 @@ class VLAnchorBackend:
         indices = tuple(dict.fromkeys(int(index) for index in frame_indices))
         if not indices:
             return tuple()
-        current_parameters = {
-            index: RetouchParameters().to_dict() for index in indices
-        }
+        current_parameters = {index: RetouchParameters().to_dict() for index in indices}
         mkl_previews: dict[int, Image.Image] = {}
         mkl_parameters: dict[int, RetouchParameters] = {}
         mkl_metadata: dict[int, dict[str, object]] = {}
@@ -526,7 +534,9 @@ class VLAnchorBackend:
                 elif mkl_decision == "attenuate":
                     mkl_weight = float(np.clip(requested_weight, 0.0, 1.0))
                 elif mkl_decision != "reject":
-                    raise ValueError("mkl_decision must be accept, attenuate, or reject.")
+                    raise ValueError(
+                        "mkl_decision must be accept, attenuate, or reject."
+                    )
                 prior_values = mkl_parameters[index].to_dict()
                 for name in merged:
                     merged[name] += mkl_weight * prior_values[name]
@@ -544,7 +554,9 @@ class VLAnchorBackend:
             )
             confidence = float(np.clip(float(item.get("confidence", 0.0)), 0.0, 1.0))
             raw_stage_records = item.get("stages", [])
-            model_stage_records = raw_stage_records if isinstance(raw_stage_records, list) else []
+            model_stage_records = (
+                raw_stage_records if isinstance(raw_stage_records, list) else []
+            )
             stage_records = [
                 {
                     "stage": "batched_pool",
@@ -589,9 +601,7 @@ class VLAnchorBackend:
                                 "correspondences": item.get(
                                     "semantic_correspondences", []
                                 ),
-                                "protected_regions": item.get(
-                                    "protected_regions", []
-                                ),
+                                "protected_regions": item.get("protected_regions", []),
                             },
                         }
                     ),
@@ -639,9 +649,7 @@ class VLAnchorBackend:
                     ("source Anchor", source),
                     (f"current preview before {stage}", preview),
                 ]
-                prompt = anchor_grade_prompt(
-                    instruction, stage, parameters.to_dict()
-                )
+                prompt = anchor_grade_prompt(instruction, stage, parameters.to_dict())
             else:
                 labeled_images = [
                     (
@@ -742,9 +750,7 @@ class VLAnchorBackend:
                         {
                             "decision": record["mkl_decision"],
                             "weight": record["mkl_weight"],
-                            "correspondences": record[
-                                "semantic_correspondences"
-                            ],
+                            "correspondences": record["semantic_correspondences"],
                             "protected_regions": record["protected_regions"],
                         }
                         for record in stage_records
@@ -1035,9 +1041,7 @@ class MonetParameterBackend:
                     "conversion": conversion.to_dict(),
                     "rollback_eligible": True,
                     "invalid_reason": (
-                        None
-                        if valid
-                        else "unsupported_monet_adjustments"
+                        None if valid else "unsupported_monet_adjustments"
                     ),
                     "stdout": completed.stdout[-2000:],
                     "stderr": completed.stderr[-2000:],

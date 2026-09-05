@@ -151,9 +151,18 @@ __DEVICE__ float3 transform(
     float green = dg_srgb_to_linear(p_G);
     float blue = dg_srgb_to_linear(p_B);
     float exposure_gain = _powf(2.0f, exposure);
-    red *= exposure_gain * _expf(0.28f * temperature + 0.10f * tint);
-    green *= exposure_gain * _expf(-0.16f * tint);
-    blue *= exposure_gain * _expf(-0.28f * temperature + 0.10f * tint);
+    red *= exposure_gain;
+    green *= exposure_gain;
+    blue *= exposure_gain;
+    float source_luminance = 0.2126f * red + 0.7152f * green + 0.0722f * blue;
+    red *= _expf(0.28f * temperature + 0.10f * tint);
+    green *= _expf(-0.16f * tint);
+    blue *= _expf(-0.28f * temperature + 0.10f * tint);
+    float balanced_luminance = 0.2126f * red + 0.7152f * green + 0.0722f * blue;
+    float white_balance_scale = source_luminance / _fmaxf(balanced_luminance, 0.00000001f);
+    red *= white_balance_scale;
+    green *= white_balance_scale;
+    blue *= white_balance_scale;
 
     float luminance = dg_clamp(
         0.2126f * red + 0.7152f * green + 0.0722f * blue, 0.0f, 1.0f);
@@ -391,9 +400,7 @@ def export_resolve_package(
             "dynamic_keyframe_max_error": dynamic_keyframe_error,
         },
         "shots": shots,
-        "dynamic_apply_script": str(
-            _write_resolve_apply_script(output_dir).resolve()
-        ),
+        "dynamic_apply_script": str(_write_resolve_apply_script(output_dir).resolve()),
         "resolve_status": (
             "Static LUTs and Resolve 19.1+ time-aware DCTLs are ready. The "
             "generated script applies DCTLs to an existing dedicated Color node."

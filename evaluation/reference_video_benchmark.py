@@ -177,61 +177,6 @@ def _align_frames(
     return tuple(aligned)
 
 
-def _delta_e_ciede2000(lab1: np.ndarray, lab2: np.ndarray) -> np.ndarray:
-    """Vectorised CIEDE2000, used only to describe input/output edit size."""
-
-    l1, a1, b1 = np.moveaxis(np.asarray(lab1, dtype=np.float64), -1, 0)
-    l2, a2, b2 = np.moveaxis(np.asarray(lab2, dtype=np.float64), -1, 0)
-    c1 = np.sqrt(a1 * a1 + b1 * b1)
-    c2 = np.sqrt(a2 * a2 + b2 * b2)
-    c_bar = (c1 + c2) / 2.0
-    g = 0.5 * (1.0 - np.sqrt(c_bar**7 / (c_bar**7 + 25.0**7)))
-    a1p, a2p = (1.0 + g) * a1, (1.0 + g) * a2
-    c1p = np.sqrt(a1p * a1p + b1 * b1)
-    c2p = np.sqrt(a2p * a2p + b2 * b2)
-    h1p = np.mod(np.degrees(np.arctan2(b1, a1p)), 360.0)
-    h2p = np.mod(np.degrees(np.arctan2(b2, a2p)), 360.0)
-    dlp = l2 - l1
-    dcp = c2p - c1p
-    dhp = h2p - h1p
-    dhp = np.where(c1p * c2p == 0.0, 0.0, dhp)
-    dhp = np.where(dhp > 180.0, dhp - 360.0, dhp)
-    dhp = np.where(dhp < -180.0, dhp + 360.0, dhp)
-    dhp_rad = np.radians(dhp / 2.0)
-    dh_term = 2.0 * np.sqrt(c1p * c2p) * np.sin(dhp_rad)
-
-    l_bar = (l1 + l2) / 2.0
-    c_bar_p = (c1p + c2p) / 2.0
-    hsum = h1p + h2p
-    hdiff = np.abs(h1p - h2p)
-    h_bar = np.where(c1p * c2p == 0.0, hsum, hsum / 2.0)
-    h_bar = np.where(
-        (c1p * c2p != 0.0) & (hdiff > 180.0) & (hsum < 360.0),
-        (hsum + 360.0) / 2.0,
-        h_bar,
-    )
-    h_bar = np.where(
-        (c1p * c2p != 0.0) & (hdiff > 180.0) & (hsum >= 360.0),
-        (hsum - 360.0) / 2.0,
-        h_bar,
-    )
-    t = (
-        1.0
-        - 0.17 * np.cos(np.radians(h_bar - 30.0))
-        + 0.24 * np.cos(np.radians(2.0 * h_bar))
-        + 0.32 * np.cos(np.radians(3.0 * h_bar + 6.0))
-        - 0.20 * np.cos(np.radians(4.0 * h_bar - 63.0))
-    )
-    sl = 1.0 + 0.015 * (l_bar - 50.0) ** 2 / np.sqrt(20.0 + (l_bar - 50.0) ** 2)
-    sc = 1.0 + 0.045 * c_bar_p
-    sh = 1.0 + 0.015 * c_bar_p * t
-    delta_theta = 30.0 * np.exp(-(((h_bar - 275.0) / 25.0) ** 2))
-    rc = 2.0 * np.sqrt(c_bar_p**7 / (c_bar_p**7 + 25.0**7))
-    rt = -rc * np.sin(np.radians(2.0 * delta_theta))
-    dl, dc, dh = dlp / sl, dcp / sc, dh_term / sh
-    return np.sqrt(np.maximum(0.0, dl * dl + dc * dc + dh * dh + rt * dc * dh))
-
-
 def _local_structure(image: Image.Image, size: tuple[int, int]) -> np.ndarray:
     """Remove local luminance/contrast so legitimate grading is discounted."""
 
@@ -388,11 +333,9 @@ def _temporal_transform_drift(
 def metrics(
     target: VideoData,
     output: Sequence[Image.Image],
+    reference: VideoData | None = None,
     learned_suite=None,
 ) -> dict[str, float]:
-    target_pixels = _pixels(target.frames)
-    output_pixels = _pixels(output)
-    edit_delta_e00 = _delta_e_ciede2000(target_pixels, output_pixels)
     shadow_clipping, source_shadow_clipping = [], []
     highlight_clipping, source_highlight_clipping = [], []
     structure_scores = []
@@ -412,9 +355,6 @@ def metrics(
     highlight_clip = float(np.mean(highlight_clipping))
     source_highlight_clip = float(np.mean(source_highlight_clipping))
     values: dict[str, float] = {
-        # Descriptor only: there is deliberately no up/down direction or gate.
-        "edit_magnitude_delta_e00": float(np.mean(edit_delta_e00)),
-        "edited_pixel_fraction_delta_e00_gt_2": float(np.mean(edit_delta_e00 > 2.0)),
         "content_structure_correlation": float(np.mean(structure_scores)),
         "edge_ssim": float(np.mean(edge_ssim_scores)),
         "temporal_flow_warp_error": _motion_compensated_output_residual(
@@ -428,7 +368,11 @@ def metrics(
         "new_highlight_clip_fraction": max(0.0, highlight_clip - source_highlight_clip),
     }
     if learned_suite is not None:
-        values.update(learned_suite.evaluate(target.frames, output))
+        if reference is None:
+            raise ValueError(
+                "Learned reference-style metrics require a reference video."
+            )
+        values.update(learned_suite.evaluate(target.frames, reference.frames, output))
     return values
 
 
@@ -565,6 +509,7 @@ def run_manifest(
     external: dict[str, Path] | None = None,
     learned_metrics: bool = False,
     learned_frame_count: int = 8,
+    style_vgg_weights: Path | None = None,
 ) -> dict[str, object]:
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     root = manifest_path.parent
@@ -573,7 +518,10 @@ def run_manifest(
     if learned_metrics:
         from evaluation.perceptual_metrics import LearnedMetricSuite
 
-        learned_suite = LearnedMetricSuite(frame_count=learned_frame_count)
+        learned_suite = LearnedMetricSuite(
+            frame_count=learned_frame_count,
+            style_vgg_weights=style_vgg_weights,
+        )
     for sample in payload["samples"]:
         sample_id = str(sample["id"])
         target = _load(
@@ -631,6 +579,7 @@ def run_manifest(
             result_metrics = metrics(
                 target,
                 result,
+                reference=reference,
                 learned_suite=learned_suite,
             )
             result_metrics["runtime_seconds"] = elapsed
@@ -661,19 +610,19 @@ def run_manifest(
             for key in keys
         }
     report = {
-        "schema": "reference-video-grade-benchmark/v4-no-gt",
+        "schema": "reference-video-grade-benchmark/v5-no-gt",
         "dataset": payload.get("dataset"),
         "strength": strength,
         "ranking_policy": {
             "primary": "blinded pairwise style-match and overall preference win rates",
             "objective_axes": [
+                "reference grading-style transfer",
                 "content preservation",
                 "temporal stability",
                 "no-reference image quality",
                 "technical artifacts",
             ],
             "learned_metrics": learned_metrics,
-            "edit_magnitude": "descriptor only; no direction, gate, or score contribution",
             "composite_score": None,
         },
         "rows": rows,
@@ -709,9 +658,14 @@ def main() -> None:
     parser.add_argument(
         "--learned-metrics",
         action="store_true",
-        help="Enable DINOv2, MUSIQ and CLIP-IQA (downloads model weights).",
+        help="Enable DINOv2 and MUSIQ (downloads model weights).",
     )
     parser.add_argument("--learned-frame-count", type=int, default=8)
+    parser.add_argument(
+        "--style-vgg-weights",
+        type=Path,
+        help="Path to vgg_normalised.pth for reference-style feature statistics.",
+    )
     parser.add_argument(
         "--external",
         action="append",
@@ -739,6 +693,9 @@ def main() -> None:
         external,
         learned_metrics=args.learned_metrics,
         learned_frame_count=args.learned_frame_count,
+        style_vgg_weights=(
+            None if args.style_vgg_weights is None else args.style_vgg_weights.resolve()
+        ),
     )
     print(json.dumps(report["aggregate"], indent=2))
 
