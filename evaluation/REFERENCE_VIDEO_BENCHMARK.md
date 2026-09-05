@@ -43,6 +43,7 @@ These metrics diagnose failure modes and never replace the style-match review.
 |---|---|---:|---|
 | Grading | VGG low-level style similarity | higher | Reference-conditioned color/texture feature statistics are closer |
 | Grading | VGG style gain over input | higher | The output moves toward the reference style relative to the ungraded target |
+| Grading | LLM reference-style similarity | higher | An independent blinded vision model rates abstract grading similarity on a normalized 0--1 scale |
 | Content | Local-normalised structure correlation | higher | Geometry and visible texture survive the grade |
 | Content | Edge-SSIM | higher | Edge layout remains intact after the grade |
 | Content | DINOv2 cosine similarity | higher | Learned semantic/structural features remain close to the input |
@@ -75,6 +76,12 @@ over the ungraded target: zero means no progress toward the reference, positive
 is better, and one is a perfect match in this feature space. These remain
 cross-content proxies, so the blinded reference-style win rate is authoritative.
 
+LLM reference-style similarity is the anonymized judge's 1--5
+`reference_style_match` rating normalized to 0--1. The judge sees the target,
+reference, and eight ordered output frames, and is explicitly instructed not to
+reward edit magnitude or raw object-color coincidence. Record the judge model
+and prompt protocol, and report this score separately from VGG similarity.
+
 MUSIQ was trained as a generic image-quality predictor. A cinematic grade may
 intentionally use dark exposure, low contrast, grain or restrained saturation,
 so this score is reported separately and must not override the blinded
@@ -90,13 +97,13 @@ are unchanged or improved.
 
 ## Official demo 1: current objective table
 
-| Paper method | VGG style sim. ↑ | VGG style gain ↑ | Structure ↑ | DINO ↑ | Edge-SSIM ↑ | Flow warp ↓ | Edit warp ↓ | Drift ↓ | New clip ↓ | MUSIQ ↑ |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| SA-LUT: Spatial Adaptive 4D LUT (ICCV 2025) | 0.9032 | -0.2383 | 0.8575 | 0.7526 | 0.7590 | 0.00187 | 0.00193 | 0.01601 | 53.53% | 35.49 |
-| NLUT: Neural 3D LUT for Video PST (2023) | 0.9544 | 0.4165 | 0.9558 | 0.9442 | 0.7537 | 0.00223 | 0.00182 | 0.01348 | 0.00% | 34.57 |
-| CAP-VSTNet (CVPR 2023) | 0.9701 | 0.6175 | 0.8805 | 0.6806 | 0.7645 | 0.00189 | 0.00218 | 0.01743 | 0.00% | 39.59 |
-| CanonCGT (CVPR 2026) | 0.9164 | -0.0685 | 0.9819 | 0.9774 | 0.8320 | 0.00201 | 0.00184 | 0.01546 | 1.83% | 30.37 |
-| **ShotAgent API Editor Pool** | **0.9254** | **0.0457** | **0.9878** | **0.9798** | **0.9183** | 0.00217 | **0.00157** | **0.01145** | **0.00%** | **37.89** |
+| Paper method | VGG sim. ↑ | LLM sim. ↑ | VGG gain ↑ | Structure ↑ | DINO ↑ | Edge-SSIM ↑ | Flow warp ↓ | Edit warp ↓ | Drift ↓ | New clip ↓ | MUSIQ ↑ |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| SA-LUT: Spatial Adaptive 4D LUT (ICCV 2025) | 0.9032 | 0.125 | -0.2383 | 0.8575 | 0.7526 | 0.7590 | 0.00187 | 0.00193 | 0.01601 | 53.53% | 35.49 |
+| NLUT: Neural 3D LUT for Video PST (2023) | 0.9544 | **0.825** | 0.4165 | 0.9558 | 0.9442 | 0.7537 | 0.00223 | 0.00182 | 0.01348 | 0.00% | 34.57 |
+| CAP-VSTNet (CVPR 2023) | **0.9701** | 0.700 | **0.6175** | 0.8805 | 0.6806 | 0.7645 | 0.00189 | 0.00218 | 0.01743 | 0.00% | **39.59** |
+| CanonCGT (CVPR 2026) | 0.9164 | 0.300 | -0.0685 | 0.9819 | 0.9774 | 0.8320 | 0.00201 | 0.00184 | 0.01546 | 1.83% | 30.37 |
+| **ShotAgent API Editor Pool** | 0.9254 | 0.625 | 0.0457 | **0.9878** | **0.9798** | **0.9183** | 0.00217 | **0.00157** | **0.01145** | **0.00%** | 37.89 |
 
 This is a diagnostic table rather than a single-score ranking. CAP-VSTNet and
 NLUT move farther toward the reference proxy, while ShotAgent leads the four
@@ -143,6 +150,17 @@ python -m evaluation.reference_video_benchmark \
   --external shotagent-pool=outputs/reference_video_eval/shotagent_visual_outputs \
   --learned-metrics --learned-frame-count 8 \
   --style-vgg-weights /path/to/vgg_normalised.pth
+```
+
+Run the anonymized LLM style review and attach its normalized similarity to the
+same report with:
+
+```bash
+python -m evaluation.blind_video_judge \
+  --review-dir outputs/reference_video_eval/demo1_results_modern \
+  --sample official-v1-to-v2 \
+  --output outputs/reference_video_eval/demo1_results_modern/mllm_reference_style_review.json \
+  --benchmark-report outputs/reference_video_eval/demo1_results_modern/report.json
 ```
 
 ## Modern reference-style baselines

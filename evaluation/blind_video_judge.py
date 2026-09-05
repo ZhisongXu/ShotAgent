@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 import numpy as np
 from PIL import Image, ImageDraw
@@ -60,7 +61,9 @@ def _score(value: object, name: str) -> float:
 def _validate(payload: dict[str, object], codes: Sequence[str]) -> dict[str, object]:
     raw_scores = payload.get("candidate_scores")
     if not isinstance(raw_scores, dict) or set(raw_scores) != set(codes):
-        raise ValueError("candidate_scores must contain every anonymous candidate exactly once")
+        raise ValueError(
+            "candidate_scores must contain every anonymous candidate exactly once"
+        )
     scores: dict[str, dict[str, object]] = {}
     fields = (
         "reference_style_match",
@@ -72,10 +75,73 @@ def _validate(payload: dict[str, object], codes: Sequence[str]) -> dict[str, obj
     for code in codes:
         raw = raw_scores[code]
         if not isinstance(raw, dict):
-            raise ValueError(f"{code} score must be an object")
-        scores[code] = {field: _score(raw.get(field), f"{code}.{field}") for field in fields}
+            raise TypeError(f"{code} score must be an object")
+        scores[code] = {
+            field: _score(raw.get(field), f"{code}.{field}") for field in fields
+        }
         scores[code]["rationale"] = str(raw.get("rationale", ""))[:500]
-    return {"candidate_scores": scores, "review_summary": str(payload.get("review_summary", ""))[:1000]}
+    return {
+        "candidate_scores": scores,
+        "review_summary": str(payload.get("review_summary", ""))[:1000],
+    }
+
+
+def attach_reference_style_similarity(
+    report_path: Path,
+    key_path: Path,
+    review: dict[str, object],
+) -> dict[str, object]:
+    """Attach normalized, de-anonymized LLM style similarity to a benchmark."""
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assignments = json.loads(key_path.read_text(encoding="utf-8"))
+    sample = str(review["sample"])
+    raw_scores = review["candidate_scores"]
+    code_to_method = {
+        str(item["candidate_code"]): str(item["method"])
+        for item in assignments
+        if str(item["sample"]) == sample
+    }
+    similarity_by_method = {
+        code_to_method[code]: (float(values["reference_style_match"]) - 1.0) / 4.0
+        for code, values in raw_scores.items()
+        if code in code_to_method
+    }
+    for row in report["rows"]:
+        if str(row["sample"]) != sample:
+            continue
+        method = str(row["method"])
+        if method in similarity_by_method:
+            row["llm_reference_style_similarity"] = similarity_by_method[method]
+    for method, values in report["aggregate"].items():
+        method_scores = [
+            float(row["llm_reference_style_similarity"])
+            for row in report["rows"]
+            if row["method"] == method and "llm_reference_style_similarity" in row
+        ]
+        if method_scores:
+            values["llm_reference_style_similarity"] = float(np.mean(method_scores))
+    report["llm_reference_style_evaluation"] = {
+        "judge_model": review["judge_model"],
+        "scale": "normalized from 1-5 to 0-1",
+        "evidence": review["evidence"],
+        "review_file": str(report_path.parent / "mllm_reference_style_review.json"),
+    }
+    report_path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    columns = list(report["rows"][0])
+    for row in report["rows"]:
+        for key in row:
+            if key not in columns:
+                columns.append(key)
+    with (report_path.parent / "results.csv").open(
+        "w", newline="", encoding="utf-8"
+    ) as handle:
+        writer = csv.DictWriter(handle, fieldnames=columns)
+        writer.writeheader()
+        writer.writerows(report["rows"])
+    return report
 
 
 def main() -> None:
@@ -85,6 +151,11 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--model", default="gpt-5.6-sol")
     parser.add_argument("--env-file", type=Path, default=Path(".env"))
+    parser.add_argument(
+        "--benchmark-report",
+        type=Path,
+        help="Optionally attach normalized LLM style similarity to report.json.",
+    )
     args = parser.parse_args()
     _load_env(args.env_file)
     media = args.review_dir / "blind_review_media" / args.sample
@@ -92,11 +163,20 @@ def main() -> None:
     if len(candidates) < 2:
         raise ValueError("At least two anonymous candidates are required")
     labeled = [
-        ("TARGET: original content video, ordered frames", _storyboard(media / "target.mp4")),
-        ("REFERENCE: desired grading style, ordered frames", _storyboard(media / "reference.mp4")),
+        (
+            "TARGET: original content video, ordered frames",
+            _storyboard(media / "target.mp4"),
+        ),
+        (
+            "REFERENCE: desired grading style, ordered frames",
+            _storyboard(media / "reference.mp4"),
+        ),
     ]
     codes = [path.stem for path in candidates]
-    labeled.extend((f"ANONYMOUS CANDIDATE {path.stem}, ordered frames", _storyboard(path)) for path in candidates)
+    labeled.extend(
+        (f"ANONYMOUS CANDIDATE {path.stem}, ordered frames", _storyboard(path))
+        for path in candidates
+    )
     prompt = """You are an independent evaluator for reference-video controlled color grading with no ground truth.
 
 Judge anonymous candidates only from the supplied ordered storyboards. The TARGET defines content and geometry. The REFERENCE defines abstract grading style: tonal hierarchy, contrast character, palette relationships, color temperature, saturation character, highlight/shadow treatment, and atmosphere. Target and reference depict different content, so do not reward raw object-color or histogram coincidence. Do not reward a candidate merely for making a larger edit.
@@ -129,7 +209,15 @@ Include every supplied candidate code exactly once. Do not guess method identiti
         **result,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    args.output.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    if args.benchmark_report is not None:
+        attach_reference_style_similarity(
+            args.benchmark_report,
+            args.review_dir / "blind_review_key.json",
+            report,
+        )
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
 
