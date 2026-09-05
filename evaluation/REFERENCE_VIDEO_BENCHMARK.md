@@ -44,9 +44,6 @@ These metrics diagnose failure modes and never replace the style-match review.
 | Content | Local-normalised structure correlation | higher | Geometry and visible texture survive the grade |
 | Content | Edge-SSIM | higher | Edge layout remains intact after the grade |
 | Content | DINOv2 cosine similarity | higher | Learned semantic/structural features remain close to the input |
-| Reference color | Normalized Lab histogram EMD | lower | Output and reference marginal Lab distributions become closer |
-| Instruction | CLIP-T | higher | Output frames agree with a supplied textual look instruction |
-| Style direction | CLIP directional similarity | higher | The target-to-output CLIP change points toward the target-to-reference change |
 | Temporal | Cut-masked flow warping error | lower | Output frames remain coherent under source-video optical flow |
 | Temporal | Cut-masked edit warping error | lower | The edit does not add motion-compensated flicker |
 | Temporal | Cut-masked temporal style drift | lower | The applied tonal/color signature does not jump between adjacent frames |
@@ -67,15 +64,7 @@ much those fitted coefficients jump between adjacent frames.
 
 The learned metrics are enabled with `--learned-metrics` and use eight sampled
 frames by default. Install `requirements-evaluation.txt` before the first run;
-the model weights are downloaded once and cached. CLIP-T is emitted only when
-the manifest sample contains an `instruction` string.
-
-Lab EMD is the mean of normalized one-dimensional Wasserstein distances for
-the L*, a* and b* marginals. It is useful for detecting whether a method moved
-toward the reference palette, but it is affected by different objects and scene
-composition. CLIP directional similarity has the same cross-content limitation:
-without an ungraded version of the reference video, the target-to-reference
-direction also contains semantic change. Both remain auxiliary diagnostics.
+the model weights are downloaded once and cached.
 
 MUSIQ and CLIP-IQA were trained as generic image-quality predictors. A cinematic
 grade may intentionally use dark exposure, low contrast, grain or restrained
@@ -96,12 +85,12 @@ landing in a stronger bin.
 
 ## Metrics excluded from the main table
 
-Do not use raw RGB/Lab histogram distance, histogram correlation,
-output-to-reference SSIM/LPIPS/Delta-E, or changed-pixel fraction as the primary
-ranking. Those quantities mostly measure which colors and objects happen to
-occur in the two scenes. Normalized Lab EMD is retained only as a named
-reference-color diagnostic. BRISQUE and NIQE may be included in an appendix but
-are not reliable arbiters of intentional cinematic looks.
+Do not use raw RGB/Lab histogram distance, histogram correlation, Lab EMD,
+CLIP-T, CLIP directional similarity, output-to-reference SSIM/LPIPS/Delta-E, or
+changed-pixel fraction in this benchmark. With unrelated target/reference
+content, these quantities are dominated by scene semantics or color
+composition. BRISQUE and NIQE may be included in an appendix but are not
+reliable arbiters of intentional cinematic looks.
 
 ## Running the benchmark
 
@@ -134,5 +123,38 @@ python -m evaluation.reference_video_benchmark \
   --learned-metrics --learned-frame-count 8
 ```
 
-The report schema is `reference-video-grade-benchmark/v3-no-gt`. It explicitly
+## Modern reference-style baselines
+
+Recent image-reference methods can enter the same video protocol by selecting
+the temporal middle frame of the reference video as the style image. Methods
+that estimate one global 3D LUT also use the middle frame of the target video
+during estimation and apply the resulting LUT to every target frame. This
+keeps the reference selection fixed and avoids frame-by-frame re-estimation.
+
+Run the official SA-LUT checkpoint with:
+
+```bash
+python -m evaluation.run_salut_baseline \
+  --repo-dir /path/to/SA-LUT \
+  --checkpoint /path/to/SA-LUT.ckpt \
+  --target target.mp4 --reference reference.mp4 \
+  --output outputs/sa-lut/sample.mp4
+```
+
+Run the official NLUT checkpoint and its 40-step test-time fine-tuning with:
+
+```bash
+python -m evaluation.run_nlut_baseline \
+  --repo-dir /path/to/NLUT \
+  --checkpoint /path/to/336999_style_lut.pth \
+  --target target.mp4 --reference reference.mp4 \
+  --output outputs/nlut/sample.mp4
+```
+
+Both adapters replace the repositories' old custom interpolation extensions
+with equivalent PyTorch implementations. They still load the published model
+weights and preserve the released inference logic. Record any resolution or
+memory adaptation beside the result.
+
+The report schema is `reference-video-grade-benchmark/v4-no-gt`. It explicitly
 records that edit magnitude is descriptive and that no composite score exists.

@@ -19,15 +19,15 @@ import hashlib
 import json
 import shutil
 import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path
-from typing import Callable, Sequence
 
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw
 from scipy.linalg import sqrtm
-from scipy.stats import wasserstein_distance
 from skimage.metrics import structural_similarity
 
 from video_retouch.io import decode_video, encode_video
@@ -72,7 +72,9 @@ def _pixels(frames: Sequence[Image.Image], sample_count: int = 24) -> np.ndarray
     return values
 
 
-def _reinhard_fit(source: np.ndarray, reference: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _reinhard_fit(
+    source: np.ndarray, reference: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     source_mean = source.mean(axis=0)
     source_std = np.maximum(source.std(axis=0), 1e-3)
     reference_mean = reference.mean(axis=0)
@@ -81,14 +83,18 @@ def _reinhard_fit(source: np.ndarray, reference: np.ndarray) -> tuple[np.ndarray
     return source_mean, reference_mean, scale
 
 
-def _apply_reinhard(image: Image.Image, fit: tuple[np.ndarray, np.ndarray, np.ndarray], strength: float) -> Image.Image:
+def _apply_reinhard(
+    image: Image.Image, fit: tuple[np.ndarray, np.ndarray, np.ndarray], strength: float
+) -> Image.Image:
     source_mean, reference_mean, scale = fit
     lab = _lab(image)
     mapped = (lab - source_mean) * scale + reference_mean
     return _rgb((1.0 - strength) * lab + strength * mapped)
 
 
-def _mkl_fit(source: np.ndarray, reference: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _mkl_fit(
+    source: np.ndarray, reference: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     source_mean = source.mean(axis=0)
     reference_mean = reference.mean(axis=0)
     cs = np.cov(source, rowvar=False) + np.eye(3) * 1e-3
@@ -99,38 +105,54 @@ def _mkl_fit(source: np.ndarray, reference: np.ndarray) -> tuple[np.ndarray, np.
     return source_mean, reference_mean, transform
 
 
-def _apply_mkl(image: Image.Image, fit: tuple[np.ndarray, np.ndarray, np.ndarray], strength: float) -> Image.Image:
+def _apply_mkl(
+    image: Image.Image, fit: tuple[np.ndarray, np.ndarray, np.ndarray], strength: float
+) -> Image.Image:
     source_mean, reference_mean, transform = fit
     lab = _lab(image)
     mapped = (lab - source_mean) @ transform.T + reference_mean
     return _rgb((1.0 - strength) * lab + strength * mapped)
 
 
-def identity(target: VideoData, reference: VideoData, strength: float) -> tuple[Image.Image, ...]:
+def identity(
+    target: VideoData, reference: VideoData, strength: float
+) -> tuple[Image.Image, ...]:
     del reference, strength
     return tuple(frame.copy() for frame in target.frames)
 
 
-def global_reinhard(target: VideoData, reference: VideoData, strength: float) -> tuple[Image.Image, ...]:
+def global_reinhard(
+    target: VideoData, reference: VideoData, strength: float
+) -> tuple[Image.Image, ...]:
     fit = _reinhard_fit(_pixels(target.frames), _pixels(reference.frames))
     return tuple(_apply_reinhard(frame, fit, strength) for frame in target.frames)
 
 
-def global_mkl(target: VideoData, reference: VideoData, strength: float) -> tuple[Image.Image, ...]:
+def global_mkl(
+    target: VideoData, reference: VideoData, strength: float
+) -> tuple[Image.Image, ...]:
     fit = _mkl_fit(_pixels(target.frames), _pixels(reference.frames))
     return tuple(_apply_mkl(frame, fit, strength) for frame in target.frames)
 
 
-def framewise_reinhard(target: VideoData, reference: VideoData, strength: float) -> tuple[Image.Image, ...]:
+def framewise_reinhard(
+    target: VideoData, reference: VideoData, strength: float
+) -> tuple[Image.Image, ...]:
     output = []
     for index, frame in enumerate(target.frames):
-        reference_index = round(index * (len(reference.frames) - 1) / max(1, len(target.frames) - 1))
-        fit = _reinhard_fit(_pixels((frame,), 1), _pixels((reference.frames[reference_index],), 1))
+        reference_index = round(
+            index * (len(reference.frames) - 1) / max(1, len(target.frames) - 1)
+        )
+        fit = _reinhard_fit(
+            _pixels((frame,), 1), _pixels((reference.frames[reference_index],), 1)
+        )
         output.append(_apply_reinhard(frame, fit, strength))
     return tuple(output)
 
 
-BASELINES: dict[str, Callable[[VideoData, VideoData, float], tuple[Image.Image, ...]]] = {
+BASELINES: dict[
+    str, Callable[[VideoData, VideoData, float], tuple[Image.Image, ...]]
+] = {
     "identity": identity,
     "global-reinhard": global_reinhard,
     "global-mkl": global_mkl,
@@ -139,16 +161,16 @@ BASELINES: dict[str, Callable[[VideoData, VideoData, float], tuple[Image.Image, 
 METHOD_NAMES = tuple(BASELINES)
 
 
-def _align_frames(frames: Sequence[Image.Image], target: VideoData) -> tuple[Image.Image, ...]:
+def _align_frames(
+    frames: Sequence[Image.Image], target: VideoData
+) -> tuple[Image.Image, ...]:
     """Time-align any black-box API output to the target video contract."""
 
     if not frames:
         raise ValueError("Method output contains no frames.")
     aligned = []
     for index in range(len(target.frames)):
-        source_index = round(
-            index * (len(frames) - 1) / max(1, len(target.frames) - 1)
-        )
+        source_index = round(index * (len(frames) - 1) / max(1, len(target.frames) - 1))
         aligned.append(
             frames[source_index].convert("RGB").resize(target.frames[index].size)
         )
@@ -183,8 +205,16 @@ def _delta_e_ciede2000(lab1: np.ndarray, lab2: np.ndarray) -> np.ndarray:
     hsum = h1p + h2p
     hdiff = np.abs(h1p - h2p)
     h_bar = np.where(c1p * c2p == 0.0, hsum, hsum / 2.0)
-    h_bar = np.where((c1p * c2p != 0.0) & (hdiff > 180.0) & (hsum < 360.0), (hsum + 360.0) / 2.0, h_bar)
-    h_bar = np.where((c1p * c2p != 0.0) & (hdiff > 180.0) & (hsum >= 360.0), (hsum - 360.0) / 2.0, h_bar)
+    h_bar = np.where(
+        (c1p * c2p != 0.0) & (hdiff > 180.0) & (hsum < 360.0),
+        (hsum + 360.0) / 2.0,
+        h_bar,
+    )
+    h_bar = np.where(
+        (c1p * c2p != 0.0) & (hdiff > 180.0) & (hsum >= 360.0),
+        (hsum - 360.0) / 2.0,
+        h_bar,
+    )
     t = (
         1.0
         - 0.17 * np.cos(np.radians(h_bar - 30.0))
@@ -195,7 +225,7 @@ def _delta_e_ciede2000(lab1: np.ndarray, lab2: np.ndarray) -> np.ndarray:
     sl = 1.0 + 0.015 * (l_bar - 50.0) ** 2 / np.sqrt(20.0 + (l_bar - 50.0) ** 2)
     sc = 1.0 + 0.045 * c_bar_p
     sh = 1.0 + 0.015 * c_bar_p * t
-    delta_theta = 30.0 * np.exp(-((h_bar - 275.0) / 25.0) ** 2)
+    delta_theta = 30.0 * np.exp(-(((h_bar - 275.0) / 25.0) ** 2))
     rc = 2.0 * np.sqrt(c_bar_p**7 / (c_bar_p**7 + 25.0**7))
     rt = -rc * np.sin(np.radians(2.0 * delta_theta))
     dl, dc, dh = dlp / sl, dcp / sc, dh_term / sh
@@ -210,11 +240,15 @@ def _local_structure(image: Image.Image, size: tuple[int, int]) -> np.ndarray:
         cv2.COLOR_RGB2GRAY,
     )
     mean = cv2.GaussianBlur(gray, (0, 0), 3.0)
-    variance = np.maximum(cv2.GaussianBlur(gray * gray, (0, 0), 3.0) - mean * mean, 1e-4)
+    variance = np.maximum(
+        cv2.GaussianBlur(gray * gray, (0, 0), 3.0) - mean * mean, 1e-4
+    )
     return (gray - mean) / np.sqrt(variance)
 
 
-def _structure_correlation(left: Image.Image, right: Image.Image, size: tuple[int, int]) -> float:
+def _structure_correlation(
+    left: Image.Image, right: Image.Image, size: tuple[int, int]
+) -> float:
     """Correlation of locally normalised luminance structure."""
 
     a = _local_structure(left, size).reshape(-1)
@@ -239,43 +273,13 @@ def _edge_ssim(left: Image.Image, right: Image.Image, size: tuple[int, int]) -> 
     return float(structural_similarity(edges(left), edges(right), data_range=1.0))
 
 
-def _lab_histogram_emd(
-    output: Sequence[Image.Image], reference: Sequence[Image.Image]
-) -> float:
-    """Mean normalized 1-D Wasserstein distance over the L*, a*, b* marginals.
-
-    The value is a cross-content color-distribution diagnostic. It is kept as
-    its own axis because scene composition can change it even when a grade is
-    perceptually correct.
-    """
-
-    output_pixels = _pixels(output)
-    reference_pixels = _pixels(reference)
-    ranges = ((0.0, 100.0), (-128.0, 127.0), (-128.0, 127.0))
-    distances = []
-    for channel, (lower, upper) in enumerate(ranges):
-        out_hist, _ = np.histogram(output_pixels[:, channel], bins=65, range=(lower, upper))
-        ref_hist, _ = np.histogram(reference_pixels[:, channel], bins=65, range=(lower, upper))
-        # histogram has 65 bins; use the corresponding bin centres.
-        edges = np.linspace(lower, upper, 66)
-        bin_centers = (edges[:-1] + edges[1:]) / 2.0
-        distance = wasserstein_distance(
-            bin_centers,
-            bin_centers,
-            u_weights=out_hist.astype(np.float64),
-            v_weights=ref_hist.astype(np.float64),
-        )
-        distances.append(float(distance / (upper - lower)))
-    return float(np.mean(distances))
-
-
 def _valid_transitions(source: Sequence[Image.Image]) -> np.ndarray:
     """Return transitions that are unlikely to be hard cuts."""
 
     if len(source) < 2:
         return np.zeros(0, dtype=bool)
     scores = []
-    for previous, current in zip(source[:-1], source[1:]):
+    for previous, current in pairwise(source):
         size = (min(160, current.width), min(90, current.height))
         a = np.asarray(previous.convert("RGB").resize(size), dtype=np.float32) / 255.0
         b = np.asarray(current.convert("RGB").resize(size), dtype=np.float32) / 255.0
@@ -287,7 +291,9 @@ def _valid_transitions(source: Sequence[Image.Image]) -> np.ndarray:
     return values <= threshold
 
 
-def _motion_compensated_edit_residual(source: Sequence[Image.Image], output: Sequence[Image.Image]) -> float:
+def _motion_compensated_edit_residual(
+    source: Sequence[Image.Image], output: Sequence[Image.Image]
+) -> float:
     if len(source) < 2:
         return 0.0
     errors = []
@@ -298,17 +304,23 @@ def _motion_compensated_edit_residual(source: Sequence[Image.Image], output: Seq
         size = (min(256, source[index].width), min(144, source[index].height))
         previous = np.asarray(source[index - 1].resize(size), dtype=np.float32) / 255.0
         current = np.asarray(source[index].resize(size), dtype=np.float32) / 255.0
-        previous_out = np.asarray(output[index - 1].resize(size), dtype=np.float32) / 255.0
+        previous_out = (
+            np.asarray(output[index - 1].resize(size), dtype=np.float32) / 255.0
+        )
         current_out = np.asarray(output[index].resize(size), dtype=np.float32) / 255.0
         previous_gray = cv2.cvtColor(previous, cv2.COLOR_RGB2GRAY)
         current_gray = cv2.cvtColor(current, cv2.COLOR_RGB2GRAY)
-        flow = cv2.calcOpticalFlowFarneback(previous_gray, current_gray, None, 0.5, 3, 15, 3, 5, 1.2, 0)
+        flow = cv2.calcOpticalFlowFarneback(
+            previous_gray, current_gray, None, 0.5, 3, 15, 3, 5, 1.2, 0
+        )
         grid_x, grid_y = np.meshgrid(np.arange(size[0]), np.arange(size[1]))
         map_x = (grid_x - flow[..., 0]).astype(np.float32)
         map_y = (grid_y - flow[..., 1]).astype(np.float32)
         edit_previous = previous_out - previous
         edit_current = current_out - current
-        warped = cv2.remap(edit_previous, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+        warped = cv2.remap(
+            edit_previous, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT
+        )
         errors.append(float(np.mean(np.abs(edit_current - warped))))
     return float(np.mean(errors)) if errors else 0.0
 
@@ -328,7 +340,9 @@ def _motion_compensated_output_residual(
         size = (min(256, source[index].width), min(144, source[index].height))
         previous = np.asarray(source[index - 1].resize(size), dtype=np.float32) / 255.0
         current = np.asarray(source[index].resize(size), dtype=np.float32) / 255.0
-        previous_out = np.asarray(output[index - 1].resize(size), dtype=np.float32) / 255.0
+        previous_out = (
+            np.asarray(output[index - 1].resize(size), dtype=np.float32) / 255.0
+        )
         current_out = np.asarray(output[index].resize(size), dtype=np.float32) / 255.0
         previous_gray = cv2.cvtColor(previous, cv2.COLOR_RGB2GRAY)
         current_gray = cv2.cvtColor(current, cv2.COLOR_RGB2GRAY)
@@ -358,10 +372,14 @@ def _frame_edit_signature(before: Image.Image, after: Image.Image) -> np.ndarray
     return coefficients.reshape(-1)
 
 
-def _temporal_transform_drift(source: Sequence[Image.Image], output: Sequence[Image.Image]) -> float:
+def _temporal_transform_drift(
+    source: Sequence[Image.Image], output: Sequence[Image.Image]
+) -> float:
     if len(source) < 2:
         return 0.0
-    signatures = np.asarray([_frame_edit_signature(a, b) for a, b in zip(source, output)])
+    signatures = np.asarray(
+        [_frame_edit_signature(a, b) for a, b in zip(source, output)]
+    )
     differences = np.linalg.norm(np.diff(signatures, axis=0), axis=1)
     valid = _valid_transitions(source)
     return float(np.mean(differences[valid])) if valid.any() else 0.0
@@ -370,10 +388,8 @@ def _temporal_transform_drift(source: Sequence[Image.Image], output: Sequence[Im
 def metrics(
     target: VideoData,
     output: Sequence[Image.Image],
-    reference: VideoData | None = None,
     learned_suite=None,
-    instruction: str | None = None,
-) -> dict[str, float | None]:
+) -> dict[str, float]:
     target_pixels = _pixels(target.frames)
     output_pixels = _pixels(output)
     edit_delta_e00 = _delta_e_ciede2000(target_pixels, output_pixels)
@@ -401,21 +417,18 @@ def metrics(
         "edited_pixel_fraction_delta_e00_gt_2": float(np.mean(edit_delta_e00 > 2.0)),
         "content_structure_correlation": float(np.mean(structure_scores)),
         "edge_ssim": float(np.mean(edge_ssim_scores)),
-        "lab_histogram_emd": (
-            _lab_histogram_emd(output, reference.frames) if reference is not None else None
+        "temporal_flow_warp_error": _motion_compensated_output_residual(
+            target.frames, output
         ),
-        "temporal_flow_warp_error": _motion_compensated_output_residual(target.frames, output),
-        "temporal_edit_warp_error": _motion_compensated_edit_residual(target.frames, output),
+        "temporal_edit_warp_error": _motion_compensated_edit_residual(
+            target.frames, output
+        ),
         "temporal_transform_drift": _temporal_transform_drift(target.frames, output),
         "new_shadow_clip_fraction": max(0.0, shadow_clip - source_shadow_clip),
         "new_highlight_clip_fraction": max(0.0, highlight_clip - source_highlight_clip),
     }
     if learned_suite is not None:
-        if reference is None:
-            raise ValueError("Learned reference metrics require reference video frames.")
-        values.update(
-            learned_suite.evaluate(target.frames, output, reference.frames, instruction)
-        )
+        values.update(learned_suite.evaluate(target.frames, output))
     return values
 
 
@@ -439,7 +452,9 @@ def _write_blind_review(
         shutil.copy2(sample_dir / "reference.mp4", blind_dir / "reference.mp4")
         ordered = sorted(
             methods,
-            key=lambda method: hashlib.sha256(f"{sample_id}:{method}".encode()).hexdigest(),
+            key=lambda method: hashlib.sha256(
+                f"{sample_id}:{method}".encode()
+            ).hexdigest(),
         )
         codes: list[str] = []
         for index, method in enumerate(ordered, start=1):
@@ -448,13 +463,19 @@ def _write_blind_review(
             destination = blind_dir / f"{code}.mp4"
             shutil.copy2(sample_dir / f"{method}.mp4", destination)
             relative = destination.relative_to(output_dir).as_posix()
-            assignments.append({"sample": sample_id, "candidate_code": code, "method": method})
+            assignments.append(
+                {"sample": sample_id, "candidate_code": code, "method": method}
+            )
             individual_rows.append(
                 {
                     "sample": sample_id,
                     "candidate_code": code,
-                    "target_video": (blind_dir / "target.mp4").relative_to(output_dir).as_posix(),
-                    "reference_video": (blind_dir / "reference.mp4").relative_to(output_dir).as_posix(),
+                    "target_video": (blind_dir / "target.mp4")
+                    .relative_to(output_dir)
+                    .as_posix(),
+                    "reference_video": (blind_dir / "reference.mp4")
+                    .relative_to(output_dir)
+                    .as_posix(),
                     "candidate_video": relative,
                     "reference_style_match_1_5": "",
                     "content_preservation_1_5": "",
@@ -472,12 +493,20 @@ def _write_blind_review(
                     {
                         "sample": sample_id,
                         "pair_id": f"P{pair_index:02d}",
-                        "target_video": (blind_dir / "target.mp4").relative_to(output_dir).as_posix(),
-                        "reference_video": (blind_dir / "reference.mp4").relative_to(output_dir).as_posix(),
+                        "target_video": (blind_dir / "target.mp4")
+                        .relative_to(output_dir)
+                        .as_posix(),
+                        "reference_video": (blind_dir / "reference.mp4")
+                        .relative_to(output_dir)
+                        .as_posix(),
                         "candidate_a": left,
-                        "candidate_a_video": (blind_dir / f"{left}.mp4").relative_to(output_dir).as_posix(),
+                        "candidate_a_video": (blind_dir / f"{left}.mp4")
+                        .relative_to(output_dir)
+                        .as_posix(),
                         "candidate_b": right,
-                        "candidate_b_video": (blind_dir / f"{right}.mp4").relative_to(output_dir).as_posix(),
+                        "candidate_b_video": (blind_dir / f"{right}.mp4")
+                        .relative_to(output_dir)
+                        .as_posix(),
                         "style_match_winner_A_B_Tie": "",
                         "overall_winner_A_B_Tie": "",
                         "notes": "",
@@ -499,7 +528,12 @@ def _write_blind_review(
     )
 
 
-def _mosaic(target: VideoData, reference: VideoData, outputs: dict[str, Sequence[Image.Image]], path: Path) -> None:
+def _mosaic(
+    target: VideoData,
+    reference: VideoData,
+    outputs: dict[str, Sequence[Image.Image]],
+    path: Path,
+) -> None:
     labels = ["TARGET", "REFERENCE"]
     sources: list[Sequence[Image.Image]] = [target.frames, reference.frames]
     labels.extend(name.upper() for name in outputs)
@@ -510,7 +544,9 @@ def _mosaic(target: VideoData, reference: VideoData, outputs: dict[str, Sequence
         canvas = Image.new("RGB", (width * len(sources), height + 34), "#111820")
         draw = ImageDraw.Draw(canvas)
         for column, (label, sequence) in enumerate(zip(labels, sources)):
-            source_index = round(index * (len(sequence) - 1) / max(1, len(target.frames) - 1))
+            source_index = round(
+                index * (len(sequence) - 1) / max(1, len(target.frames) - 1)
+            )
             image = sequence[source_index].convert("RGB")
             image.thumbnail((width, height), Image.Resampling.LANCZOS)
             x = column * width + (width - image.width) // 2
@@ -540,14 +576,29 @@ def run_manifest(
         learned_suite = LearnedMetricSuite(frame_count=learned_frame_count)
     for sample in payload["samples"]:
         sample_id = str(sample["id"])
-        target = _load((root / sample["target"]).resolve(), sample.get("max_frames"), sample.get("max_side"))
-        reference = _load((root / sample["reference"]).resolve(), sample.get("max_frames"), sample.get("max_side"))
+        target = _load(
+            (root / sample["target"]).resolve(),
+            sample.get("max_frames"),
+            sample.get("max_side"),
+        )
+        reference = _load(
+            (root / sample["reference"]).resolve(),
+            sample.get("max_frames"),
+            sample.get("max_side"),
+        )
         sample_outputs = {}
         requested = list(methods) + list((external or {}).keys())
         method_dir = output_dir / sample_id
         method_dir.mkdir(parents=True, exist_ok=True)
-        encode_video(target.frames, method_dir / "target.mp4", target.fps, preset="veryfast")
-        encode_video(reference.frames, method_dir / "reference.mp4", reference.fps, preset="veryfast")
+        encode_video(
+            target.frames, method_dir / "target.mp4", target.fps, preset="veryfast"
+        )
+        encode_video(
+            reference.frames,
+            method_dir / "reference.mp4",
+            reference.fps,
+            preset="veryfast",
+        )
         for method in requested:
             start = time.perf_counter()
             if method in (external or {}):
@@ -574,19 +625,21 @@ def run_manifest(
             else:
                 result = BASELINES[method](target, reference, strength)
             elapsed = time.perf_counter() - start
-            encode_video(result, method_dir / f"{method}.mp4", target.fps, preset="veryfast")
+            encode_video(
+                result, method_dir / f"{method}.mp4", target.fps, preset="veryfast"
+            )
             result_metrics = metrics(
                 target,
                 result,
-                reference=reference,
                 learned_suite=learned_suite,
-                instruction=sample.get("instruction"),
             )
             result_metrics["runtime_seconds"] = elapsed
             result_metrics["processing_fps"] = len(result) / max(elapsed, 1e-8)
             rows.append({"sample": sample_id, "method": method, **result_metrics})
             sample_outputs[method] = result
-        _mosaic(target, reference, sample_outputs, output_dir / sample_id / "comparison.mp4")
+        _mosaic(
+            target, reference, sample_outputs, output_dir / sample_id / "comparison.mp4"
+        )
     aggregate = {}
     for method in list(methods) + list((external or {}).keys()):
         method_rows = [row for row in rows if row["method"] == method]
@@ -596,17 +649,24 @@ def run_manifest(
             if any(isinstance(row.get(key), (int, float)) for row in method_rows)
         ]
         aggregate[method] = {
-            key: float(np.mean([row[key] for row in method_rows if isinstance(row.get(key), (int, float))]))
+            key: float(
+                np.mean(
+                    [
+                        row[key]
+                        for row in method_rows
+                        if isinstance(row.get(key), (int, float))
+                    ]
+                )
+            )
             for key in keys
         }
     report = {
-        "schema": "reference-video-grade-benchmark/v3-no-gt",
+        "schema": "reference-video-grade-benchmark/v4-no-gt",
         "dataset": payload.get("dataset"),
         "strength": strength,
         "ranking_policy": {
             "primary": "blinded pairwise style-match and overall preference win rates",
             "objective_axes": [
-                "reference color distribution",
                 "content preservation",
                 "temporal stability",
                 "no-reference image quality",
@@ -620,13 +680,21 @@ def run_manifest(
         "aggregate": aggregate,
     }
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
-    columns = ["sample", "method", *[key for key in rows[0] if key not in {"sample", "method"}]]
+    (output_dir / "report.json").write_text(
+        json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    columns = [
+        "sample",
+        "method",
+        *[key for key in rows[0] if key not in {"sample", "method"}],
+    ]
     lines = [",".join(columns)]
     for row in rows:
         lines.append(",".join(str(row[column]) for column in columns))
     (output_dir / "results.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    _write_blind_review(output_dir, payload["samples"], list(methods) + list((external or {}).keys()))
+    _write_blind_review(
+        output_dir, payload["samples"], list(methods) + list((external or {}).keys())
+    )
     return report
 
 
@@ -634,12 +702,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--methods", nargs="+", choices=sorted(METHOD_NAMES), default=list(METHOD_NAMES))
+    parser.add_argument(
+        "--methods", nargs="+", choices=sorted(METHOD_NAMES), default=list(METHOD_NAMES)
+    )
     parser.add_argument("--strength", type=float, default=0.90)
     parser.add_argument(
         "--learned-metrics",
         action="store_true",
-        help="Enable CLIP, DINOv2, MUSIQ and CLIP-IQA (downloads model weights).",
+        help="Enable DINOv2, MUSIQ and CLIP-IQA (downloads model weights).",
     )
     parser.add_argument("--learned-frame-count", type=int, default=8)
     parser.add_argument(
