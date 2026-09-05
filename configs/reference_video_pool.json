@@ -99,6 +99,7 @@
   "reference_chroma_refinement": {
     "enabled": true,
     "strength": 0.6,
+    "target_luma_strength": 0.5,
     "mode": "luma_preserving_video_global",
     "role": "reference-affinity-editor pool tool"
   },

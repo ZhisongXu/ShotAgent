@@ -1,0 +1,82 @@
+{
+  "schema": "reference-video-grade-manifest/v2",
+  "dataset": "NLUT official video examples x VideoColorGrading official reference videos",
+  "protocol": {
+    "task": "reference-video controlled photorealistic color grading without ground truth",
+    "pairing": "nine independent NLUT target sequences with a balanced rotation over three VideoColorGrading references",
+    "aggregation": "compute every metric per sequence, then macro-average sequences with sample standard deviation and 95% normal interval",
+    "baseline_reference_adapter": "use the temporal middle reference frame for methods whose published interface accepts one style image",
+    "shotagent_reference_adapter": "use an ordered reference-video storyboard and full-video measured style profile",
+    "frame_policy": "first 96 target frames at native cadence, resized only when the long side exceeds 512 pixels",
+    "ranking": "per-metric average rank across sequences; no composite score"
+  },
+  "sources": {
+    "targets": "https://github.com/semchan/NLUT",
+    "references": "https://github.com/seunghyuns98/VideoColorGrading/tree/main/examples"
+  },
+  "samples": [
+    {
+      "id": "nlut-city__vcg-v1",
+      "target": "../../outputs/reference_video_eval/modern_baselines/NLUT/data/city.mp4",
+      "reference": "../../outputs/reference_video_eval/official_demos/official_sources/video1.mp4",
+      "max_frames": 96,
+      "max_side": 512
+    },
+    {
+      "id": "nlut-city2__vcg-v2",
+      "target": "../../outputs/reference_video_eval/modern_baselines/NLUT/data/city2.mp4",
+      "reference": "../../outputs/reference_video_eval/official_demos/official_sources/video2.mp4",
+      "max_frames": 96,
+      "max_side": 512
+    },
+    {
+      "id": "nlut-girl__vcg-v3",
+      "target": "../../outputs/reference_video_eval/modern_baselines/NLUT/data/girl.mp4",
+      "reference": "../../outputs/reference_video_eval/official_demos/official_sources/video3.mp4",
+      "max_frames": 96,
+      "max_side": 512
+    },
+    {
+      "id": "nlut-kelly__vcg-v2",
+      "target": "../../outputs/reference_video_eval/modern_baselines/NLUT/data/kelly.mp4",
+      "reference": "../../outputs/reference_video_eval/official_demos/official_sources/video2.mp4",
+      "max_frames": 96,
+      "max_side": 512
+    },
+    {
+      "id": "nlut-monkey__vcg-v3",
+      "target": "../../outputs/reference_video_eval/modern_baselines/NLUT/data/monkey.mp4",
+      "reference": "../../outputs/reference_video_eval/official_demos/official_sources/video3.mp4",
+      "max_frames": 96,
+      "max_side": 512
+    },
+    {
+      "id": "nlut-night__vcg-v1",
+      "target": "../../outputs/reference_video_eval/modern_baselines/NLUT/data/night.mp4",
+      "reference": "../../outputs/reference_video_eval/official_demos/official_sources/video1.mp4",
+      "max_frames": 96,
+      "max_side": 512
+    },
+    {
+      "id": "nlut-pedestrian__vcg-v3",
+      "target": "../../outputs/reference_video_eval/modern_baselines/NLUT/data/pedestrian.mp4",
+      "reference": "../../outputs/reference_video_eval/official_demos/official_sources/video3.mp4",
+      "max_frames": 96,
+      "max_side": 512
+    },
+    {
+      "id": "nlut-stream2__vcg-v1",
+      "target": "../../outputs/reference_video_eval/modern_baselines/NLUT/data/stream2.mp4",
+      "reference": "../../outputs/reference_video_eval/official_demos/official_sources/video1.mp4",
+      "max_frames": 96,
+      "max_side": 512
+    },
+    {
+      "id": "nlut-sunset__vcg-v2",
+      "target": "../../outputs/reference_video_eval/modern_baselines/NLUT/data/sunset.mp4",
+      "reference": "../../outputs/reference_video_eval/official_demos/official_sources/video2.mp4",
+      "max_frames": 96,
+      "max_side": 512
+    }
+  ]
+}

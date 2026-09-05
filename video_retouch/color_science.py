@@ -224,12 +224,14 @@ class ChromaAffinityFit:
 
 
 class LumaPreservingChromaMatcher:
-    """Transfer reference chroma covariance while preserving source lightness.
+    """Transfer reference chroma covariance with target-luma affinity.
 
     This is a two-channel closed-form transport over CIELAB ``a,b``. It is
-    deliberately narrower than full color transfer: the source luminance and
-    its spatial structure remain unchanged, and one fit is reused for all
-    frames so the operation cannot introduce framewise parameter flicker.
+    deliberately narrower than full color transfer. The rendered luminance can
+    be blended toward the corresponding target-frame luminance to protect
+    structure and black/highlight detail. One fit and one fixed blend strength
+    are reused for all frames, so the operation cannot introduce framewise
+    parameter flicker.
     """
 
     def __init__(
@@ -238,6 +240,7 @@ class LumaPreservingChromaMatcher:
         covariance_epsilon: float = 1e-4,
         max_samples: int = 40_000,
         analysis_max_side: int = 128,
+        target_luma_strength: float = 0.0,
     ) -> None:
         if not 0.0 <= strength <= 1.0:
             raise ValueError("Chroma-affinity strength must be in [0, 1].")
@@ -245,6 +248,9 @@ class LumaPreservingChromaMatcher:
         self.covariance_epsilon = float(covariance_epsilon)
         self.max_samples = int(max_samples)
         self.analysis_max_side = int(analysis_max_side)
+        if not 0.0 <= target_luma_strength <= 1.0:
+            raise ValueError("Target-luma affinity strength must be in [0, 1].")
+        self.target_luma_strength = float(target_luma_strength)
 
     def _video_ab(self, frames: Sequence[Image.Image]) -> np.ndarray:
         if not frames:
@@ -289,7 +295,12 @@ class LumaPreservingChromaMatcher:
             matrix_ab=matrix,
         )
 
-    def apply(self, frame: Image.Image, fit: ChromaAffinityFit) -> Image.Image:
+    def apply(
+        self,
+        frame: Image.Image,
+        fit: ChromaAffinityFit,
+        target_frame: Image.Image | None = None,
+    ) -> Image.Image:
         rgb = np.asarray(frame.convert("RGB"), dtype=np.uint8)
         lab = _rgb_to_normalized_lab(rgb)
         source_ab = lab[..., 1:].reshape(-1, 2)
@@ -299,6 +310,28 @@ class LumaPreservingChromaMatcher:
         lab[..., 1:] = (
             (1.0 - self.strength) * source_ab + self.strength * mapped_ab
         ).reshape(lab.shape[:2] + (2,))
+        if self.target_luma_strength > 0.0:
+            if target_frame is None:
+                raise ValueError(
+                    "target_frame is required when target-luma affinity is enabled."
+                )
+            target = target_frame.convert("RGB").resize(frame.size)
+            target_luma = _rgb_to_normalized_lab(np.asarray(target))[..., 0]
+            rendered_luma = lab[..., 0].copy()
+            blended_luma = (
+                1.0 - self.target_luma_strength
+            ) * rendered_luma + self.target_luma_strength * target_luma
+            blended_luma = np.where(
+                (rendered_luma <= 0.01) & (target_luma > 0.01),
+                np.maximum(blended_luma, np.minimum(target_luma, 0.02)),
+                blended_luma,
+            )
+            blended_luma = np.where(
+                (rendered_luma >= 0.99) & (target_luma < 0.99),
+                np.minimum(blended_luma, np.maximum(target_luma, 0.98)),
+                blended_luma,
+            )
+            lab[..., 0] = blended_luma
         output, _ = _normalized_lab_to_rgb(lab)
         return Image.fromarray((output * 255.0 + 0.5).astype(np.uint8), mode="RGB")
 
@@ -306,10 +339,34 @@ class LumaPreservingChromaMatcher:
         self,
         source_frames: Sequence[Image.Image],
         reference_frames: Sequence[Image.Image],
+        target_luma_frames: Sequence[Image.Image] | None = None,
     ) -> tuple[tuple[Image.Image, ...], dict[str, object]]:
+        if self.target_luma_strength > 0.0:
+            if target_luma_frames is None:
+                raise ValueError(
+                    "target_luma_frames are required when target-luma affinity is enabled."
+                )
+            if len(target_luma_frames) != len(source_frames):
+                raise ValueError(
+                    "Target-luma and rendered videos must have equal length."
+                )
         fit = self.fit(source_frames, reference_frames)
-        output = tuple(self.apply(frame, fit) for frame in source_frames)
-        return output, fit.to_dict(self.strength)
+        output = tuple(
+            self.apply(
+                frame,
+                fit,
+                None if target_luma_frames is None else target_luma_frames[index],
+            )
+            for index, frame in enumerate(source_frames)
+        )
+        audit = fit.to_dict(self.strength)
+        audit["target_luma_affinity_strength"] = self.target_luma_strength
+        audit["luma_policy"] = (
+            "fixed_blend_with_corresponding_target_luma_and_soft_clip_guard"
+            if self.target_luma_strength > 0.0
+            else "preserve_each_rendered_pixel_cielab_lightness"
+        )
+        return output, audit
 
 
 def spatiotemporal_palette_features(

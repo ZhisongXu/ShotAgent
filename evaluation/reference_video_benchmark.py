@@ -28,6 +28,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw
 from scipy.linalg import sqrtm
+from scipy.stats import rankdata
 from skimage.metrics import structural_similarity
 
 from video_retouch.io import decode_video, encode_video
@@ -206,6 +207,22 @@ BASELINES: dict[
     "framewise-reinhard": framewise_reinhard,
 }
 METHOD_NAMES = tuple(BASELINES)
+
+METRIC_DIRECTIONS = {
+    "vgg_style_similarity": "higher",
+    "llm_reference_style_similarity": "higher",
+    "lab_wasserstein_distance": "lower",
+    "lab_sliced_wasserstein_distance": "lower",
+    "content_structure_correlation": "higher",
+    "edge_ssim": "higher",
+    "dino_content_similarity": "higher",
+    "temporal_flow_warp_error": "lower",
+    "temporal_edit_warp_error": "lower",
+    "temporal_transform_drift": "lower",
+    "musiq_score": "higher",
+    "new_shadow_clip_fraction": "lower",
+    "new_highlight_clip_fraction": "lower",
+}
 
 
 def _align_frames(
@@ -603,6 +620,7 @@ def run_manifest(
         )
         for method in requested:
             start = time.perf_counter()
+            measure_runtime = method not in (external or {})
             if method in (external or {}):
                 method_root = (external or {})[method]
                 candidates = (
@@ -636,14 +654,16 @@ def run_manifest(
                 reference=reference,
                 learned_suite=learned_suite,
             )
-            result_metrics["runtime_seconds"] = elapsed
-            result_metrics["processing_fps"] = len(result) / max(elapsed, 1e-8)
+            if measure_runtime:
+                result_metrics["runtime_seconds"] = elapsed
+                result_metrics["processing_fps"] = len(result) / max(elapsed, 1e-8)
             rows.append({"sample": sample_id, "method": method, **result_metrics})
             sample_outputs[method] = result
         _mosaic(
             target, reference, sample_outputs, output_dir / sample_id / "comparison.mp4"
         )
     aggregate = {}
+    aggregate_statistics = {}
     for method in list(methods) + list((external or {}).keys()):
         method_rows = [row for row in rows if row["method"] == method]
         keys = [
@@ -651,20 +671,59 @@ def run_manifest(
             for key in method_rows[0]
             if any(isinstance(row.get(key), (int, float)) for row in method_rows)
         ]
-        aggregate[method] = {
-            key: float(
-                np.mean(
-                    [
-                        row[key]
-                        for row in method_rows
-                        if isinstance(row.get(key), (int, float))
-                    ]
-                )
+        aggregate[method] = {}
+        aggregate_statistics[method] = {}
+        for key in keys:
+            samples = np.asarray(
+                [
+                    row[key]
+                    for row in method_rows
+                    if isinstance(row.get(key), (int, float))
+                ],
+                dtype=np.float64,
             )
-            for key in keys
+            mean = float(np.mean(samples))
+            std = float(np.std(samples, ddof=1)) if len(samples) > 1 else 0.0
+            radius = 1.96 * std / np.sqrt(len(samples))
+            aggregate[method][key] = mean
+            aggregate_statistics[method][key] = {
+                "mean": mean,
+                "std": std,
+                "ci95_low": mean - radius,
+                "ci95_high": mean + radius,
+                "n": len(samples),
+            }
+
+    method_order = list(methods) + list((external or {}).keys())
+    average_ranks: dict[str, dict[str, float]] = {method: {} for method in method_order}
+    for metric_name, direction in METRIC_DIRECTIONS.items():
+        ranks_by_method: dict[str, list[float]] = {
+            method: [] for method in method_order
         }
+        for sample in payload["samples"]:
+            sample_id = str(sample["id"])
+            sample_rows = {
+                str(row["method"]): row
+                for row in rows
+                if row["sample"] == sample_id and metric_name in row
+            }
+            if len(sample_rows) != len(method_order):
+                continue
+            values = np.asarray(
+                [float(sample_rows[method][metric_name]) for method in method_order]
+            )
+            if direction == "higher":
+                values = -values
+            ranks = rankdata(values, method="average")
+            for method, rank in zip(method_order, ranks):
+                ranks_by_method[method].append(float(rank))
+        for method in method_order:
+            if ranks_by_method[method]:
+                average_ranks[method][metric_name] = float(
+                    np.mean(ranks_by_method[method])
+                )
     report = {
-        "schema": "reference-video-grade-benchmark/v7-no-gt",
+        "schema": "reference-video-grade-benchmark/v8-no-gt",
         "dataset": payload.get("dataset"),
         "strength": strength,
         "ranking_policy": {
@@ -681,6 +740,8 @@ def run_manifest(
         },
         "rows": rows,
         "aggregate": aggregate,
+        "aggregate_statistics": aggregate_statistics,
+        "average_ranks": average_ranks,
     }
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "report.json").write_text(
@@ -695,6 +756,26 @@ def run_manifest(
     for row in rows:
         lines.append(",".join(str(row[column]) for column in columns))
     (output_dir / "results.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    aggregate_rows = []
+    for method in method_order:
+        row: dict[str, object] = {
+            "method": method,
+            "sequence_count": len(payload["samples"]),
+        }
+        for key, statistics in aggregate_statistics[method].items():
+            row[f"{key}_mean"] = statistics["mean"]
+            row[f"{key}_std"] = statistics["std"]
+            row[f"{key}_ci95_low"] = statistics["ci95_low"]
+            row[f"{key}_ci95_high"] = statistics["ci95_high"]
+            if key in average_ranks[method]:
+                row[f"{key}_average_rank"] = average_ranks[method][key]
+        aggregate_rows.append(row)
+    with (output_dir / "aggregate.csv").open(
+        "w", newline="", encoding="utf-8-sig"
+    ) as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(aggregate_rows[0]))
+        writer.writeheader()
+        writer.writerows(aggregate_rows)
     _write_blind_review(
         output_dir, payload["samples"], list(methods) + list((external or {}).keys())
     )
@@ -706,7 +787,7 @@ def main() -> None:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument(
-        "--methods", nargs="+", choices=sorted(METHOD_NAMES), default=list(METHOD_NAMES)
+        "--methods", nargs="*", choices=sorted(METHOD_NAMES), default=list(METHOD_NAMES)
     )
     parser.add_argument("--strength", type=float, default=0.90)
     parser.add_argument(

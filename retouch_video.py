@@ -372,8 +372,13 @@ def main() -> None:
                 f"strength={strength:.3f}"
             )
             rendered_frames, refinement_audit = LumaPreservingChromaMatcher(
-                strength=strength
-            ).transfer_video(rendered_frames, reference_decoded.frames)
+                strength=strength,
+                target_luma_strength=float(refinement.get("target_luma_strength", 0.0)),
+            ).transfer_video(
+                rendered_frames,
+                reference_decoded.frames,
+                target_luma_frames=render_video.frames,
+            )
             payload["reference_chroma_refinement"] = refinement_audit
         progress(f"encoding source preview with preset={args.encode_preset}")
         encode_video(

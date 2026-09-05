@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw
+from scipy.stats import rankdata
 
 from video_retouch.clients import OpenAIResponsesVisionClient
 from video_retouch.io import decode_video
@@ -134,7 +135,43 @@ def attach_reference_style_similarity(
             if row["method"] == method and "llm_reference_style_similarity" in row
         ]
         if method_scores:
-            values["llm_reference_style_similarity"] = float(np.mean(method_scores))
+            scores = np.asarray(method_scores, dtype=np.float64)
+            mean = float(np.mean(scores))
+            std = float(np.std(scores, ddof=1)) if len(scores) > 1 else 0.0
+            radius = 1.96 * std / np.sqrt(len(scores))
+            values["llm_reference_style_similarity"] = mean
+            if "aggregate_statistics" in report:
+                report["aggregate_statistics"][method][
+                    "llm_reference_style_similarity"
+                ] = {
+                    "mean": mean,
+                    "std": std,
+                    "ci95_low": mean - radius,
+                    "ci95_high": mean + radius,
+                    "n": len(scores),
+                }
+    methods = list(report["aggregate"])
+    ranks: dict[str, list[float]] = {method: [] for method in methods}
+    samples = sorted({str(row["sample"]) for row in report["rows"]})
+    for sample_id in samples:
+        sample_rows = {
+            str(row["method"]): float(row["llm_reference_style_similarity"])
+            for row in report["rows"]
+            if row["sample"] == sample_id and "llm_reference_style_similarity" in row
+        }
+        if len(sample_rows) != len(methods):
+            continue
+        sample_ranks = rankdata(
+            [-sample_rows[method] for method in methods], method="average"
+        )
+        for method, rank in zip(methods, sample_ranks):
+            ranks[method].append(float(rank))
+    if "average_ranks" in report:
+        for method in methods:
+            if ranks[method]:
+                report["average_ranks"][method]["llm_reference_style_similarity"] = (
+                    float(np.mean(ranks[method]))
+                )
     report["llm_reference_style_evaluation"] = {
         "judge_model": review["judge_model"],
         "scale": "normalized from 1-5 to 0-1",
@@ -155,6 +192,34 @@ def attach_reference_style_similarity(
         writer = csv.DictWriter(handle, fieldnames=columns)
         writer.writeheader()
         writer.writerows(report["rows"])
+    if "aggregate_statistics" in report:
+        aggregate_rows = []
+        for method in report["aggregate"]:
+            method_statistics = report["aggregate_statistics"][method]
+            aggregate_row: dict[str, object] = {
+                "method": method,
+                "sequence_count": max(
+                    (int(values["n"]) for values in method_statistics.values()),
+                    default=0,
+                ),
+            }
+            for metric, statistics in method_statistics.items():
+                for statistic in ("mean", "std", "ci95_low", "ci95_high"):
+                    aggregate_row[f"{metric}_{statistic}"] = statistics[statistic]
+                if metric in report.get("average_ranks", {}).get(method, {}):
+                    aggregate_row[f"{metric}_average_rank"] = report["average_ranks"][
+                        method
+                    ][metric]
+            aggregate_rows.append(aggregate_row)
+        aggregate_columns = list(
+            dict.fromkeys(key for row in aggregate_rows for key in row)
+        )
+        with (report_path.parent / "aggregate.csv").open(
+            "w", newline="", encoding="utf-8-sig"
+        ) as handle:
+            writer = csv.DictWriter(handle, fieldnames=aggregate_columns)
+            writer.writeheader()
+            writer.writerows(aggregate_rows)
     return report
 
 

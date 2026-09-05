@@ -72,7 +72,13 @@ def run(args: argparse.Namespace) -> None:
                 output_frames.append(Image.fromarray(np.asarray(array), mode="RGB"))
                 if index == 1 or index % 8 == 0 or index == len(target.frames):
                     print(f"CanonCGT frame {index}/{len(target.frames)}", flush=True)
-        encode_video(output_frames, output_path, target.fps, preset="veryfast")
+        encode_video(
+            output_frames,
+            output_path,
+            target.fps,
+            preset="veryfast",
+            quality=args.encode_quality,
+        )
     finally:
         os.chdir(original_cwd)
 
@@ -89,6 +95,7 @@ def main() -> None:
     parser.add_argument("--reference-frames", type=int, default=8)
     parser.add_argument("--max-side", type=int, default=512)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--encode-quality", type=float, default=10.0)
     run(parser.parse_args())
 
 

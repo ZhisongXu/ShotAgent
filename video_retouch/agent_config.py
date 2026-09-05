@@ -247,6 +247,36 @@ def load_multi_agent_runtime(path: Path) -> MultiAgentRuntime:
         seed=int(raw_search.get("seed", 7)),
     )
 
+    reference_refinement = payload.get("reference_chroma_refinement")
+    sanitized_reference_refinement = None
+    if reference_refinement is not None:
+        if not isinstance(reference_refinement, dict):
+            raise ValueError("reference_chroma_refinement must be an object.")
+        refinement_strength = float(reference_refinement.get("strength", 0.6))
+        if not 0.0 <= refinement_strength <= 1.0:
+            raise ValueError("reference_chroma_refinement.strength must be in [0, 1].")
+        refinement_mode = str(
+            reference_refinement.get("mode", "luma_preserving_video_global")
+        )
+        if refinement_mode != "luma_preserving_video_global":
+            raise ValueError(
+                "reference_chroma_refinement.mode must be "
+                "'luma_preserving_video_global'."
+            )
+        sanitized_reference_refinement = {
+            "enabled": bool(reference_refinement.get("enabled", False)),
+            "strength": refinement_strength,
+            "target_luma_strength": float(
+                reference_refinement.get("target_luma_strength", 0.0)
+            ),
+            "mode": refinement_mode,
+            "role": str(reference_refinement.get("role", "pool tool")),
+        }
+        if not 0.0 <= sanitized_reference_refinement["target_luma_strength"] <= 1.0:
+            raise ValueError(
+                "reference_chroma_refinement.target_luma_strength must be in [0, 1]."
+            )
+
     sanitized = {
         "storyboard": {
             "provider": storyboard_config.get("provider"),
@@ -293,6 +323,8 @@ def load_multi_agent_runtime(path: Path) -> MultiAgentRuntime:
             "seed": search.seed,
         },
     }
+    if sanitized_reference_refinement is not None:
+        sanitized["reference_chroma_refinement"] = sanitized_reference_refinement
     return MultiAgentRuntime(
         storyboard_client=storyboard,
         storyboard_settings=storyboard_settings,

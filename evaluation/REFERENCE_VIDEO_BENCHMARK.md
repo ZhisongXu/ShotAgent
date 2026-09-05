@@ -1,5 +1,10 @@
 # Reference-video grading benchmark (no GT)
 
+The current nine-sequence protocol and results are documented in
+[`MULTISEQUENCE_REFERENCE_VIDEO_PROTOCOL.md`](MULTISEQUENCE_REFERENCE_VIDEO_PROTOCOL.md).
+The single-pair table below is retained as an implementation-development trace
+and must not be used as the main comparative result.
+
 This benchmark evaluates a black-box visual contract:
 
 ```text
@@ -113,11 +118,12 @@ The editor must return a tone-zone plan, palette plan, semantic
 correspondences, and an affinity-preservation plan. Two other API editors
 independently propose a stronger style candidate and a detail-preserving
 candidate. The pool may then apply one video-global chroma-affinity refinement:
-it transports only the reference's CIELAB `a,b` mean/covariance, preserves each
-output pixel's CIELAB lightness, and reuses one transform for the entire video.
-This prevents the reference transfer from changing luminance edges or
-introducing framewise color estimates. The existing metric and visual critics
-select among the editor proposals. This
+it transports only the reference's CIELAB `a,b` mean/covariance and reuses one
+transform for the entire video. A fixed 0.5 target-luma affinity then blends
+the rendered and corresponding target-frame lightness with a soft clipping
+guard. This protects luminance structure without reducing the transferred
+`a,b` color change or introducing framewise estimates. The existing metric and
+visual critics select among the editor proposals. This
 adapts the useful affinity/statistics ideas to the pool while retaining the
 ShotAgent inference contract: target video plus reference video only.
 
@@ -257,5 +263,5 @@ extensions with equivalent PyTorch implementations. All four adapters load the
 published weights and preserve the released inference logic. Record any
 resolution or memory adaptation beside the result.
 
-The report schema is `reference-video-grade-benchmark/v5-no-gt`. It explicitly
+The report schema is `reference-video-grade-benchmark/v8-no-gt`. It explicitly
 records that no composite score exists.

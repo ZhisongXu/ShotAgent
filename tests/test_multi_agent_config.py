@@ -87,15 +87,41 @@ class MultiAgentConfigTest(unittest.TestCase):
 
             runtime = load_multi_agent_runtime(path)
 
-        self.assertIsInstance(
-            runtime.storyboard_client, OpenAIResponsesVisionClient
-        )
+        self.assertIsInstance(runtime.storyboard_client, OpenAIResponsesVisionClient)
         self.assertEqual(runtime.storyboard_client.model_id, "gpt-5.6-sol")
         self.assertEqual(runtime.storyboard_settings.window_seconds, 30.0)
         self.assertEqual(runtime.storyboard_settings.max_window_images, 32)
         self.assertEqual(
             runtime.manifest["storyboard"]["planner"],
             "hierarchical-vision-storyboard/v2",
+        )
+
+    def test_preserves_validated_reference_chroma_refinement(self) -> None:
+        payload = {
+            "storyboard": {
+                "provider": "openai_compatible",
+                "base_url": "https://storyboard.example/v1",
+                "model": "scene-model-a",
+                "api_key_env": "STORYBOARD_TEST_KEY",
+            },
+            "editors": [{"name": "native-editor", "type": "native"}],
+            "evaluators": [{"name": "safety", "type": "metrics"}],
+            "reference_chroma_refinement": {
+                "enabled": True,
+                "strength": 0.6,
+                "target_luma_strength": 0.5,
+                "mode": "luma_preserving_video_global",
+                "role": "reference-affinity-editor pool tool",
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agents.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            runtime = load_multi_agent_runtime(path)
+
+        self.assertEqual(
+            runtime.manifest["reference_chroma_refinement"],
+            payload["reference_chroma_refinement"],
         )
 
 
