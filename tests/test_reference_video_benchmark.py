@@ -6,6 +6,7 @@ from PIL import Image
 from evaluation.reference_video_benchmark import (
     VideoData,
     _delta_e_ciede2000,
+    _lab_histogram_emd,
     global_reinhard,
     metrics,
 )
@@ -35,7 +36,22 @@ class ReferenceVideoBenchmarkTests(unittest.TestCase):
         result = metrics(target, target.frames)
         self.assertAlmostEqual(result["edit_magnitude_delta_e00"], 0.0, places=8)
         self.assertAlmostEqual(result["content_structure_correlation"], 1.0, places=8)
+        self.assertAlmostEqual(result["edge_ssim"], 1.0, places=8)
+        self.assertGreaterEqual(result["temporal_flow_warp_error"], 0.0)
         self.assertAlmostEqual(result["temporal_transform_drift"], 0.0, places=8)
+
+    def test_reference_color_emd_is_zero_for_same_color_distribution(self) -> None:
+        target = _video((40, 80, 120))
+        self.assertAlmostEqual(
+            _lab_histogram_emd(target.frames, target.frames), 0.0, places=8
+        )
+
+    def test_reference_metrics_are_reported_without_ground_truth(self) -> None:
+        target = _video((40, 80, 120))
+        reference = _video((180, 120, 40))
+        result = metrics(target, target.frames, reference=reference)
+        self.assertIn("lab_histogram_emd", result)
+        self.assertGreater(result["lab_histogram_emd"], 0.0)
 
     def test_ciede2000_matches_published_reference_pair(self) -> None:
         left = np.array([[50.0, 2.6772, -79.7751]])

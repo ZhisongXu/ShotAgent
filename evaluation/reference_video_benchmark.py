@@ -27,6 +27,8 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw
 from scipy.linalg import sqrtm
+from scipy.stats import wasserstein_distance
+from skimage.metrics import structural_similarity
 
 from video_retouch.io import decode_video, encode_video
 
@@ -224,6 +226,49 @@ def _structure_correlation(left: Image.Image, right: Image.Image, size: tuple[in
     return float(np.clip(np.corrcoef(a, b)[0, 1], -1.0, 1.0))
 
 
+def _edge_ssim(left: Image.Image, right: Image.Image, size: tuple[int, int]) -> float:
+    """SSIM on Canny edge maps, discounting ordinary color and tone edits."""
+
+    def edges(image: Image.Image) -> np.ndarray:
+        gray = cv2.cvtColor(
+            np.asarray(image.convert("RGB").resize(size), dtype=np.uint8),
+            cv2.COLOR_RGB2GRAY,
+        )
+        return cv2.Canny(gray, 80, 160).astype(np.float32) / 255.0
+
+    return float(structural_similarity(edges(left), edges(right), data_range=1.0))
+
+
+def _lab_histogram_emd(
+    output: Sequence[Image.Image], reference: Sequence[Image.Image]
+) -> float:
+    """Mean normalized 1-D Wasserstein distance over the L*, a*, b* marginals.
+
+    The value is a cross-content color-distribution diagnostic. It is kept as
+    its own axis because scene composition can change it even when a grade is
+    perceptually correct.
+    """
+
+    output_pixels = _pixels(output)
+    reference_pixels = _pixels(reference)
+    ranges = ((0.0, 100.0), (-128.0, 127.0), (-128.0, 127.0))
+    distances = []
+    for channel, (lower, upper) in enumerate(ranges):
+        out_hist, _ = np.histogram(output_pixels[:, channel], bins=65, range=(lower, upper))
+        ref_hist, _ = np.histogram(reference_pixels[:, channel], bins=65, range=(lower, upper))
+        # histogram has 65 bins; use the corresponding bin centres.
+        edges = np.linspace(lower, upper, 66)
+        bin_centers = (edges[:-1] + edges[1:]) / 2.0
+        distance = wasserstein_distance(
+            bin_centers,
+            bin_centers,
+            u_weights=out_hist.astype(np.float64),
+            v_weights=ref_hist.astype(np.float64),
+        )
+        distances.append(float(distance / (upper - lower)))
+    return float(np.mean(distances))
+
+
 def _valid_transitions(source: Sequence[Image.Image]) -> np.ndarray:
     """Return transitions that are unlikely to be hard cuts."""
 
@@ -268,6 +313,38 @@ def _motion_compensated_edit_residual(source: Sequence[Image.Image], output: Seq
     return float(np.mean(errors)) if errors else 0.0
 
 
+def _motion_compensated_output_residual(
+    source: Sequence[Image.Image], output: Sequence[Image.Image]
+) -> float:
+    """Warp output frames with source-video flow and measure temporal residual."""
+
+    if len(source) < 2:
+        return 0.0
+    errors = []
+    valid = _valid_transitions(source)
+    for index in range(1, len(source)):
+        if not valid[index - 1]:
+            continue
+        size = (min(256, source[index].width), min(144, source[index].height))
+        previous = np.asarray(source[index - 1].resize(size), dtype=np.float32) / 255.0
+        current = np.asarray(source[index].resize(size), dtype=np.float32) / 255.0
+        previous_out = np.asarray(output[index - 1].resize(size), dtype=np.float32) / 255.0
+        current_out = np.asarray(output[index].resize(size), dtype=np.float32) / 255.0
+        previous_gray = cv2.cvtColor(previous, cv2.COLOR_RGB2GRAY)
+        current_gray = cv2.cvtColor(current, cv2.COLOR_RGB2GRAY)
+        flow = cv2.calcOpticalFlowFarneback(
+            previous_gray, current_gray, None, 0.5, 3, 15, 3, 5, 1.2, 0
+        )
+        grid_x, grid_y = np.meshgrid(np.arange(size[0]), np.arange(size[1]))
+        map_x = (grid_x - flow[..., 0]).astype(np.float32)
+        map_y = (grid_y - flow[..., 1]).astype(np.float32)
+        warped = cv2.remap(
+            previous_out, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT
+        )
+        errors.append(float(np.mean(np.abs(current_out - warped))))
+    return float(np.mean(errors)) if errors else 0.0
+
+
 def _frame_edit_signature(before: Image.Image, after: Image.Image) -> np.ndarray:
     scale = min(1.0, 96.0 / max(before.size))
     size = (max(1, round(before.width * scale)), max(1, round(before.height * scale)))
@@ -293,13 +370,17 @@ def _temporal_transform_drift(source: Sequence[Image.Image], output: Sequence[Im
 def metrics(
     target: VideoData,
     output: Sequence[Image.Image],
-) -> dict[str, float]:
+    reference: VideoData | None = None,
+    learned_suite=None,
+    instruction: str | None = None,
+) -> dict[str, float | None]:
     target_pixels = _pixels(target.frames)
     output_pixels = _pixels(output)
     edit_delta_e00 = _delta_e_ciede2000(target_pixels, output_pixels)
     shadow_clipping, source_shadow_clipping = [], []
     highlight_clipping, source_highlight_clipping = [], []
     structure_scores = []
+    edge_ssim_scores = []
     for source, result in zip(target.frames, output):
         result_l = _lab(result)[..., 0]
         source_l = _lab(source)[..., 0]
@@ -309,6 +390,7 @@ def metrics(
         source_highlight_clipping.append(float(np.mean(source_l >= 99.0)))
         size = (min(256, source.width), min(144, source.height))
         structure_scores.append(_structure_correlation(source, result, size))
+        edge_ssim_scores.append(_edge_ssim(source, result, size))
     shadow_clip = float(np.mean(shadow_clipping))
     source_shadow_clip = float(np.mean(source_shadow_clipping))
     highlight_clip = float(np.mean(highlight_clipping))
@@ -318,11 +400,22 @@ def metrics(
         "edit_magnitude_delta_e00": float(np.mean(edit_delta_e00)),
         "edited_pixel_fraction_delta_e00_gt_2": float(np.mean(edit_delta_e00 > 2.0)),
         "content_structure_correlation": float(np.mean(structure_scores)),
+        "edge_ssim": float(np.mean(edge_ssim_scores)),
+        "lab_histogram_emd": (
+            _lab_histogram_emd(output, reference.frames) if reference is not None else None
+        ),
+        "temporal_flow_warp_error": _motion_compensated_output_residual(target.frames, output),
         "temporal_edit_warp_error": _motion_compensated_edit_residual(target.frames, output),
         "temporal_transform_drift": _temporal_transform_drift(target.frames, output),
         "new_shadow_clip_fraction": max(0.0, shadow_clip - source_shadow_clip),
         "new_highlight_clip_fraction": max(0.0, highlight_clip - source_highlight_clip),
     }
+    if learned_suite is not None:
+        if reference is None:
+            raise ValueError("Learned reference metrics require reference video frames.")
+        values.update(
+            learned_suite.evaluate(target.frames, output, reference.frames, instruction)
+        )
     return values
 
 
@@ -434,10 +527,17 @@ def run_manifest(
     methods: Sequence[str],
     strength: float,
     external: dict[str, Path] | None = None,
+    learned_metrics: bool = False,
+    learned_frame_count: int = 8,
 ) -> dict[str, object]:
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     root = manifest_path.parent
     rows = []
+    learned_suite = None
+    if learned_metrics:
+        from evaluation.perceptual_metrics import LearnedMetricSuite
+
+        learned_suite = LearnedMetricSuite(frame_count=learned_frame_count)
     for sample in payload["samples"]:
         sample_id = str(sample["id"])
         target = _load((root / sample["target"]).resolve(), sample.get("max_frames"), sample.get("max_side"))
@@ -475,7 +575,13 @@ def run_manifest(
                 result = BASELINES[method](target, reference, strength)
             elapsed = time.perf_counter() - start
             encode_video(result, method_dir / f"{method}.mp4", target.fps, preset="veryfast")
-            result_metrics = metrics(target, result)
+            result_metrics = metrics(
+                target,
+                result,
+                reference=reference,
+                learned_suite=learned_suite,
+                instruction=sample.get("instruction"),
+            )
             result_metrics["runtime_seconds"] = elapsed
             result_metrics["processing_fps"] = len(result) / max(elapsed, 1e-8)
             rows.append({"sample": sample_id, "method": method, **result_metrics})
@@ -484,15 +590,29 @@ def run_manifest(
     aggregate = {}
     for method in list(methods) + list((external or {}).keys()):
         method_rows = [row for row in rows if row["method"] == method]
-        keys = [key for key, value in method_rows[0].items() if isinstance(value, (int, float))]
-        aggregate[method] = {key: float(np.mean([row[key] for row in method_rows])) for key in keys}
+        keys = [
+            key
+            for key in method_rows[0]
+            if any(isinstance(row.get(key), (int, float)) for row in method_rows)
+        ]
+        aggregate[method] = {
+            key: float(np.mean([row[key] for row in method_rows if isinstance(row.get(key), (int, float))]))
+            for key in keys
+        }
     report = {
-        "schema": "reference-video-grade-benchmark/v2-no-gt",
+        "schema": "reference-video-grade-benchmark/v3-no-gt",
         "dataset": payload.get("dataset"),
         "strength": strength,
         "ranking_policy": {
             "primary": "blinded pairwise style-match and overall preference win rates",
-            "objective_axes": ["content preservation", "temporal stability", "technical artifacts"],
+            "objective_axes": [
+                "reference color distribution",
+                "content preservation",
+                "temporal stability",
+                "no-reference image quality",
+                "technical artifacts",
+            ],
+            "learned_metrics": learned_metrics,
             "edit_magnitude": "descriptor only; no direction, gate, or score contribution",
             "composite_score": None,
         },
@@ -516,6 +636,12 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--methods", nargs="+", choices=sorted(METHOD_NAMES), default=list(METHOD_NAMES))
     parser.add_argument("--strength", type=float, default=0.90)
+    parser.add_argument(
+        "--learned-metrics",
+        action="store_true",
+        help="Enable CLIP, DINOv2, MUSIQ and CLIP-IQA (downloads model weights).",
+    )
+    parser.add_argument("--learned-frame-count", type=int, default=8)
     parser.add_argument(
         "--external",
         action="append",
@@ -541,6 +667,8 @@ def main() -> None:
         args.methods,
         args.strength,
         external,
+        learned_metrics=args.learned_metrics,
+        learned_frame_count=args.learned_frame_count,
     )
     print(json.dumps(report["aggregate"], indent=2))
 
