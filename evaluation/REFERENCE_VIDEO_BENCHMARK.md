@@ -102,7 +102,12 @@ input videos:
 The editor must return a tone-zone plan, palette plan, semantic
 correspondences, and an affinity-preservation plan. Two other API editors
 independently propose a stronger style candidate and a detail-preserving
-candidate. The existing metric and visual critics select among them. This
+candidate. The pool may then apply one video-global chroma-affinity refinement:
+it transports only the reference's CIELAB `a,b` mean/covariance, preserves each
+output pixel's CIELAB lightness, and reuses one transform for the entire video.
+This prevents the reference transfer from changing luminance edges or
+introducing framewise color estimates. The existing metric and visual critics
+select among the editor proposals. This
 adapts the useful affinity/statistics ideas to the pool while retaining the
 ShotAgent inference contract: target video plus reference video only.
 
@@ -122,16 +127,17 @@ edit-warp error, transform drift, and clipping are unchanged or improved.
 
 | Paper method | VGG sim. ↑ | LLM sim. ↑ | Structure ↑ | DINO ↑ | Edge-SSIM ↑ | Flow warp ↓ | Edit warp ↓ | Drift ↓ | New clip ↓ | MUSIQ ↑ |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| SA-LUT: Spatial Adaptive 4D LUT (ICCV 2025) | 0.9032 | 0.2417 | 0.8575 | 0.7526 | 0.7590 | 0.00187 | 0.00193 | 0.01601 | 53.53% | 35.49 |
-| NLUT: Neural 3D LUT for Video PST (2023) | 0.9544 | 0.8056 | 0.9558 | 0.9442 | 0.7537 | 0.00223 | 0.00182 | 0.01348 | 0.00% | 34.57 |
-| CAP-VSTNet (CVPR 2023) | **0.9701** | **0.8694** | 0.8805 | 0.6806 | 0.7645 | 0.00189 | 0.00218 | 0.01743 | 0.00% | **39.59** |
-| CanonCGT (CVPR 2026) | 0.9164 | 0.3611 | 0.9819 | 0.9774 | 0.8320 | 0.00201 | 0.00184 | 0.01546 | 1.83% | 30.37 |
-| **ShotAgent API Editor Pool** | 0.9254 | 0.5861 | **0.9878** | **0.9798** | **0.9183** | 0.00217 | **0.00157** | **0.01145** | **0.00%** | 37.89 |
+| SA-LUT: Spatial Adaptive 4D LUT (ICCV 2025) | 0.9032 | 0.2250 | 0.8575 | 0.7526 | 0.7590 | **0.00187** | 0.00193 | 0.01601 | 53.53% | 35.49 |
+| NLUT: Neural 3D LUT for Video PST (2023) | 0.9544 | 0.7333 | 0.9558 | 0.9442 | 0.7537 | 0.00223 | 0.00182 | 0.01348 | 0.00% | 34.57 |
+| CAP-VSTNet (CVPR 2023) | **0.9701** | **0.8500** | 0.8805 | 0.6806 | 0.7645 | 0.00189 | 0.00218 | 0.01743 | 0.00% | **39.59** |
+| CanonCGT (CVPR 2026) | 0.9164 | 0.3306 | 0.9819 | 0.9774 | 0.8320 | 0.00201 | 0.00184 | 0.01546 | 1.83% | 30.37 |
+| **ShotAgent API Editor Pool** | 0.9300 | **0.7889** | **0.9933** | **0.9835** | **0.9425** | 0.00224 | **0.00099** | **0.00537** | **0.00%** | 38.92 |
 
 This is a diagnostic table rather than a single-score ranking. CAP-VSTNet and
-NLUT move farther toward the reference proxy, while ShotAgent leads the four
-graded methods on structure, DINO, Edge-SSIM, edit stability, transform drift,
-and clipping. Formal style ranking still comes from the blinded video review.
+NLUT lead VGG similarity, while ShotAgent ranks second in the detailed LLM
+style review and leads the four graded methods on structure, DINO, Edge-SSIM,
+edit stability, transform drift, and clipping. Formal style ranking still
+comes from the blinded video review.
 
 ## Metrics excluded from the main table
 

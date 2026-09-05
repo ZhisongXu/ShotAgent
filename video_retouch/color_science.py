@@ -107,13 +107,16 @@ class LinearMongeKantorovichMatcher:
             else:
                 values = np.asarray(mask)
                 if values.dtype != np.uint8:
-                    values = (np.clip(values, 0.0, 1.0) * 255.0 + 0.5).astype(
-                        np.uint8
-                    )
+                    values = (np.clip(values, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
                 mask_image = Image.fromarray(values, mode="L")
-            keep = np.asarray(
-                mask_image.resize((rgb.shape[1], rgb.shape[0]), Image.Resampling.NEAREST)
-            ).reshape(-1) > 127
+            keep = (
+                np.asarray(
+                    mask_image.resize(
+                        (rgb.shape[1], rgb.shape[0]), Image.Resampling.NEAREST
+                    )
+                ).reshape(-1)
+                > 127
+            )
             lab = lab[keep]
         lab = lab[np.all(np.isfinite(lab), axis=1)]
         if len(lab) < 16:
@@ -144,12 +147,8 @@ class LinearMongeKantorovichMatcher:
         # inflate low-variance chroma directions.
         spectral_epsilon = max(np.finfo(np.float64).eps, self.covariance_epsilon**3)
 
-        source_sqrt = _psd_power(
-            source_covariance, 0.5, spectral_epsilon
-        )
-        source_inverse_sqrt = _psd_power(
-            source_covariance, -0.5, spectral_epsilon
-        )
+        source_sqrt = _psd_power(source_covariance, 0.5, spectral_epsilon)
+        source_inverse_sqrt = _psd_power(source_covariance, -0.5, spectral_epsilon)
         middle = source_sqrt @ reference_covariance @ source_sqrt
         matrix = (
             source_inverse_sqrt
@@ -175,9 +174,8 @@ class LinearMongeKantorovichMatcher:
         source_rgb = np.asarray(source.convert("RGB"), dtype=np.uint8)
         source_lab = _rgb_to_normalized_lab(source_rgb)
         transported = (
-            (source_lab - fit.source_mean[None, None, :]) @ fit.matrix.T
-            + fit.reference_mean[None, None, :]
-        )
+            source_lab - fit.source_mean[None, None, :]
+        ) @ fit.matrix.T + fit.reference_mean[None, None, :]
         blended = (1.0 - self.strength) * source_lab + self.strength * transported
         rgb, clipped_fraction = _normalized_lab_to_rgb(blended)
 
@@ -204,6 +202,116 @@ class LinearMongeKantorovichMatcher:
         return output, diagnostics
 
 
+@dataclass(frozen=True)
+class ChromaAffinityFit:
+    """One global chroma transform shared by every frame in a video."""
+
+    source_mean_ab: np.ndarray
+    reference_mean_ab: np.ndarray
+    matrix_ab: np.ndarray
+
+    def to_dict(self, strength: float) -> dict[str, object]:
+        return {
+            "method": "luma-preserving-chroma-affinity",
+            "strength": float(strength),
+            "source_mean_ab_normalized": self.source_mean_ab.tolist(),
+            "reference_mean_ab_normalized": self.reference_mean_ab.tolist(),
+            "matrix_ab": self.matrix_ab.tolist(),
+            "luma_policy": "preserve_each_pixel_cielab_lightness",
+            "temporal_policy": "one_transform_for_entire_video",
+            "reference_source": "input_reference_video_only",
+        }
+
+
+class LumaPreservingChromaMatcher:
+    """Transfer reference chroma covariance while preserving source lightness.
+
+    This is a two-channel closed-form transport over CIELAB ``a,b``. It is
+    deliberately narrower than full color transfer: the source luminance and
+    its spatial structure remain unchanged, and one fit is reused for all
+    frames so the operation cannot introduce framewise parameter flicker.
+    """
+
+    def __init__(
+        self,
+        strength: float = 0.6,
+        covariance_epsilon: float = 1e-4,
+        max_samples: int = 40_000,
+        analysis_max_side: int = 128,
+    ) -> None:
+        if not 0.0 <= strength <= 1.0:
+            raise ValueError("Chroma-affinity strength must be in [0, 1].")
+        self.strength = float(strength)
+        self.covariance_epsilon = float(covariance_epsilon)
+        self.max_samples = int(max_samples)
+        self.analysis_max_side = int(analysis_max_side)
+
+    def _video_ab(self, frames: Sequence[Image.Image]) -> np.ndarray:
+        if not frames:
+            raise ValueError("Chroma-affinity fitting requires non-empty videos.")
+        indices = np.unique(
+            np.linspace(0, len(frames) - 1, min(8, len(frames))).round().astype(int)
+        )
+        rows = []
+        for index in indices:
+            rgb = _resized_rgb(frames[int(index)], self.analysis_max_side)
+            rows.append(_rgb_to_normalized_lab(rgb).reshape(-1, 3)[:, 1:])
+        values = np.concatenate(rows, axis=0)
+        if len(values) > self.max_samples:
+            values = values[
+                np.linspace(0, len(values) - 1, self.max_samples).astype(np.int64)
+            ]
+        return values
+
+    def fit(
+        self,
+        source_frames: Sequence[Image.Image],
+        reference_frames: Sequence[Image.Image],
+    ) -> ChromaAffinityFit:
+        source = self._video_ab(source_frames)
+        reference = self._video_ab(reference_frames)
+        regularizer = self.covariance_epsilon * np.eye(2, dtype=np.float64)
+        source_covariance = np.cov(source, rowvar=False) + regularizer
+        reference_covariance = np.cov(reference, rowvar=False) + regularizer
+        source_sqrt = _psd_power(source_covariance, 0.5, 1e-12)
+        matrix = (
+            _psd_power(source_covariance, -0.5, 1e-12)
+            @ _psd_power(
+                source_sqrt @ reference_covariance @ source_sqrt,
+                0.5,
+                1e-12,
+            )
+            @ _psd_power(source_covariance, -0.5, 1e-12)
+        )
+        return ChromaAffinityFit(
+            source_mean_ab=source.mean(axis=0),
+            reference_mean_ab=reference.mean(axis=0),
+            matrix_ab=matrix,
+        )
+
+    def apply(self, frame: Image.Image, fit: ChromaAffinityFit) -> Image.Image:
+        rgb = np.asarray(frame.convert("RGB"), dtype=np.uint8)
+        lab = _rgb_to_normalized_lab(rgb)
+        source_ab = lab[..., 1:].reshape(-1, 2)
+        mapped_ab = (
+            source_ab - fit.source_mean_ab[None, :]
+        ) @ fit.matrix_ab.T + fit.reference_mean_ab[None, :]
+        lab[..., 1:] = (
+            (1.0 - self.strength) * source_ab + self.strength * mapped_ab
+        ).reshape(lab.shape[:2] + (2,))
+        output, _ = _normalized_lab_to_rgb(lab)
+        return Image.fromarray((output * 255.0 + 0.5).astype(np.uint8), mode="RGB")
+
+    def transfer_video(
+        self,
+        source_frames: Sequence[Image.Image],
+        reference_frames: Sequence[Image.Image],
+    ) -> tuple[tuple[Image.Image, ...], dict[str, object]]:
+        fit = self.fit(source_frames, reference_frames)
+        output = tuple(self.apply(frame, fit) for frame in source_frames)
+        return output, fit.to_dict(self.strength)
+
+
 def spatiotemporal_palette_features(
     frames: Sequence[Image.Image],
     palette_size: int = 4,
@@ -227,7 +335,9 @@ def spatiotemporal_palette_features(
         for frame in frames
     ]
     samples = np.concatenate(frame_pixels, axis=0)
-    centers = [samples[int(np.argmin(np.linalg.norm(samples - samples.mean(0), axis=1)))]]
+    centers = [
+        samples[int(np.argmin(np.linalg.norm(samples - samples.mean(0), axis=1)))]
+    ]
     for _ in range(1, palette_size):
         distances = np.min(
             np.stack(
@@ -313,10 +423,9 @@ class SourceGuidedTonalStabilizer:
             exposure = np.log2(np.median(luma) + 1e-4)
             means = np.mean(linear.reshape(-1, 3), axis=0)
             temperature = np.log((means[0] + 1e-4) / (means[2] + 1e-4)) / 0.56
-            tint = -np.log(
-                (means[1] + 1e-4)
-                / (0.5 * (means[0] + means[2]) + 1e-4)
-            ) / 0.26
+            tint = (
+                -np.log((means[1] + 1e-4) / (0.5 * (means[0] + means[2]) + 1e-4)) / 0.26
+            )
             rows.append([exposure, temperature, tint])
         return np.asarray(rows, dtype=np.float64)
 

@@ -13,6 +13,7 @@ from video_retouch import (
     VLShotPlanner,
 )
 from video_retouch.agent_config import load_multi_agent_runtime
+from video_retouch.color_science import LumaPreservingChromaMatcher
 from video_retouch.io import decode_video, encode_video
 from video_retouch.render import render_grade_frames
 from video_retouch.resolve_export import export_resolve_package
@@ -176,6 +177,12 @@ def main() -> None:
         help="libx264 preset for MP4 artifacts; use ultrafast for quick previews.",
     )
     parser.add_argument(
+        "--encode-quality",
+        type=float,
+        default=7.0,
+        help="imageio-ffmpeg quality from 0 to 10; use 10 for metric evaluation.",
+    )
+    parser.add_argument(
         "--compact",
         action="store_true",
         help="Omit the dense per-frame parameter trajectory.",
@@ -184,14 +191,14 @@ def main() -> None:
     load_env_file(Path(__file__).resolve().parent / ".env")
 
     analysis_max_side = (
-        args.analysis_max_side
-        if args.analysis_max_side is not None
-        else args.max_side
+        args.analysis_max_side if args.analysis_max_side is not None else args.max_side
     )
     render_max_side = (
         args.render_max_side if args.render_max_side is not None else args.max_side
     )
-    analysis_fps = args.analysis_fps if args.analysis_fps is not None else args.target_fps
+    analysis_fps = (
+        args.analysis_fps if args.analysis_fps is not None else args.target_fps
+    )
     progress("decoding analysis video")
     decoded = decode_video(
         args.input,
@@ -345,18 +352,36 @@ def main() -> None:
                 f"render_frames={len(render_video.frames)}"
             )
         progress("rendering graded frames")
-        rendered_frames = render_grade_frames(
-            render_video.frames,
-            render_parameters,
-            executor=pipeline.executor,
-            batch_size=args.render_batch_size,
+        rendered_frames = tuple(
+            render_grade_frames(
+                render_video.frames,
+                render_parameters,
+                executor=pipeline.executor,
+                batch_size=args.render_batch_size,
+            )
         )
+        refinement = runtime_manifest.get("reference_chroma_refinement", {})
+        if (
+            reference_decoded is not None
+            and isinstance(refinement, dict)
+            and bool(refinement.get("enabled", False))
+        ):
+            strength = float(refinement.get("strength", 0.6))
+            progress(
+                "applying pool-selected luma-preserving chroma affinity "
+                f"strength={strength:.3f}"
+            )
+            rendered_frames, refinement_audit = LumaPreservingChromaMatcher(
+                strength=strength
+            ).transfer_video(rendered_frames, reference_decoded.frames)
+            payload["reference_chroma_refinement"] = refinement_audit
         progress(f"encoding source preview with preset={args.encode_preset}")
         encode_video(
             render_video.frames,
             source_video_output,
             render_video.fps,
             preset=args.encode_preset,
+            quality=args.encode_quality,
         )
         progress(f"encoding graded preview with preset={args.encode_preset}")
         encode_video(
@@ -364,6 +389,7 @@ def main() -> None:
             result_video_output,
             render_video.fps,
             preset=args.encode_preset,
+            quality=args.encode_quality,
         )
         payload["video_artifacts"] = {
             "input": str(source_video_output),
@@ -378,7 +404,7 @@ def main() -> None:
             "analysis_frame_count": len(decoded.frames),
             "trajectory_resampled": len(render_video.frames) != len(decoded.frames),
             "video_codec": "H.264/libx264",
-            "quality": "CRF approximately 15",
+            "quality": args.encode_quality,
             "audio_preserved": False,
         }
     if args.resolve_package_dir is not None:

@@ -101,6 +101,7 @@ def encode_video(
     *,
     codec: Optional[str] = None,
     preset: str = "medium",
+    quality: float = 7.0,
 ) -> Path:
     """Encode ordered RGB frames as a silent video artifact.
 
@@ -137,7 +138,7 @@ def encode_video(
             pix_fmt_in="rgb24",
             pix_fmt_out="yuv420p",
             fps=float(fps),
-            quality=7.0,
+            quality=float(quality),
             codec="libx264",
             macro_block_size=2,
             ffmpeg_log_level="warning",
