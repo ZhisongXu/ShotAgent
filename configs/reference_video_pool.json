@@ -34,6 +34,7 @@
       "image_detail": "high",
       "stages": ["global_grade"],
       "use_mkl_prior": true,
+      "mkl_strength": 0.7,
       "mkl_projection_iterations": 30,
       "max_output_tokens": 1536
     },
@@ -76,12 +77,13 @@
       "image_detail": "high",
       "focus": "strong visible reference-video look match, preserved subject identity and texture, open shadow detail, smooth highlights, natural skin and foliage, and temporal coherence",
       "weight": 1.0,
-      "veto": false
+      "veto": false,
+      "accept_on_score": true
     }
   ],
-  "acceptance_score": 0.55,
+  "acceptance_score": 0.56,
   "search": {
-    "maximum_evaluations": 3,
+    "maximum_evaluations": 6,
     "maximum_hero_attempts": 1,
     "exploration_constant": 1.0,
     "rejection_penalty": 0.25,

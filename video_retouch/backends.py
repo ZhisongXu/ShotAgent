@@ -414,6 +414,26 @@ class VLAnchorBackend:
         current_parameters = {
             index: RetouchParameters().to_dict() for index in indices
         }
+        mkl_previews: dict[int, Image.Image] = {}
+        mkl_parameters: dict[int, RetouchParameters] = {}
+        mkl_metadata: dict[int, dict[str, object]] = {}
+        if hero_reference is not None and self.use_mkl_prior:
+            for index in indices:
+                source = frames[index].convert("RGB")
+                preview, metadata = self.mkl_matcher.transfer(
+                    source, hero_reference.grade.preview
+                )
+                projected, reconstruction_error = ParameterEstimator(
+                    iterations=self.mkl_projection_iterations,
+                    max_side=192,
+                ).fit(source, preview)
+                mkl_previews[index] = preview
+                mkl_parameters[index] = projected
+                mkl_metadata[index] = {
+                    **metadata,
+                    "projected_parameters": projected.to_dict(),
+                    "parameter_projection_error": reconstruction_error,
+                }
         labeled_images: list[tuple[str, Image.Image]] = []
         if hero_reference is not None:
             labeled_images.extend(
@@ -431,6 +451,13 @@ class VLAnchorBackend:
             )
         for index in indices:
             labeled_images.append((f"target Anchor frame_id={index}", frames[index]))
+            if index in mkl_previews:
+                labeled_images.append(
+                    (
+                        f"distribution-only MKL proposal frame_id={index}",
+                        mkl_previews[index],
+                    )
+                )
         prompt = (
             batch_storyboard_anchor_grade_prompt(
                 instruction,
@@ -454,6 +481,13 @@ class VLAnchorBackend:
                 ),
             )
         )
+        if mkl_previews:
+            prompt += (
+                "\nFor every target frame with a labeled distribution-only MKL "
+                "proposal, explicitly return mkl_decision and mkl_weight. Accept "
+                "or attenuate it when it improves the abstract reference palette; "
+                "reject it when cross-content colors or protected regions are harmed."
+            )
         payload = self.client.generate_json(labeled_images, prompt)
         raw_anchors = payload.get("anchors", [])
         if not isinstance(raw_anchors, list):
@@ -482,6 +516,20 @@ class VLAnchorBackend:
             if not isinstance(raw_updates, dict):
                 raise ValueError("Batch Anchor item requires parameter_updates.")
             merged = RetouchParameters().to_dict()
+            mkl_decision = "not_available"
+            mkl_weight = 0.0
+            if index in mkl_parameters:
+                mkl_decision = str(item.get("mkl_decision", "attenuate")).lower()
+                requested_weight = float(item.get("mkl_weight", 0.5))
+                if mkl_decision == "accept":
+                    mkl_weight = 1.0
+                elif mkl_decision == "attenuate":
+                    mkl_weight = float(np.clip(requested_weight, 0.0, 1.0))
+                elif mkl_decision != "reject":
+                    raise ValueError("mkl_decision must be accept, attenuate, or reject.")
+                prior_values = mkl_parameters[index].to_dict()
+                for name in merged:
+                    merged[name] += mkl_weight * prior_values[name]
             for name, value in raw_updates.items():
                 if name not in merged:
                     raise ValueError(f"Anchor Agent returned unknown parameter: {name}")
@@ -511,8 +559,8 @@ class VLAnchorBackend:
                         "semantic_correspondences", []
                     ),
                     "protected_regions": item.get("protected_regions", []),
-                    "mkl_decision": item.get("mkl_decision", "not_available"),
-                    "mkl_weight": float(item.get("mkl_weight", 0.0)),
+                    "mkl_decision": mkl_decision,
+                    "mkl_weight": mkl_weight,
                 }
             ]
             grades.append(
@@ -530,6 +578,23 @@ class VLAnchorBackend:
                     constraints,
                     [confidence],
                     hero_reference,
+                    (
+                        None
+                        if index not in mkl_metadata
+                        else {
+                            **mkl_metadata[index],
+                            "semantic_decision": {
+                                "decision": mkl_decision,
+                                "weight": mkl_weight,
+                                "correspondences": item.get(
+                                    "semantic_correspondences", []
+                                ),
+                                "protected_regions": item.get(
+                                    "protected_regions", []
+                                ),
+                            },
+                        }
+                    ),
                 )
             )
         return tuple(grades)

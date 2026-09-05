@@ -448,9 +448,17 @@ HeroAnchor contract: {hero_contract}
 Return JSON only:
 {{"accept":true,"score":0.0,"instruction_score":0.0,
 "content_score":0.0,"consistency_score":0.0,"hero_match_score":0.0,
-"recommended_anchor":null,"reasons":["..."]}}
+"recommended_anchor":null,"parameter_adjustments":{{"exposure":0.0,
+"temperature":0.0,"tint":0.0,"contrast":0.0,"highlights":0.0,
+"shadows":0.0,"saturation":0.0,"vibrance":0.0,"tone_curve":0.0}},
+"reasons":["..."]}}
 All scores are in [0,1]. Reject visible artifacts, content changes, clipping,
 inconsistent grading, or a shot that fails the HeroAnchor look contract. When
 rejecting because the current Anchor is unrepresentative, recommended_anchor
 may be an absolute frame ID visible in the supplied labels; otherwise use null.
+When rejecting a correct Anchor because of the rendered grade, return small
+relative parameter_adjustments that directly address the visible failure.
+Positive values increase a control and negative values decrease it. Omit local
+controls because no mask is available. Return zero adjustments when the grade
+is accepted or when a safe correction cannot be inferred.
 """.strip()

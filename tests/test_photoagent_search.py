@@ -267,6 +267,35 @@ class PhotoAgentSearchTest(unittest.TestCase):
         self.assertIn("safety:clipping", result.reasons)
         self.assertTrue(result.metadata["vetoed"])
 
+    def test_visual_member_can_accept_on_calibrated_score(self):
+        ensemble = CriticEnsemble(
+            (
+                CriticMember(
+                    FixedCritic("visual", 0.7, False, "minor mismatch"),
+                    accept_on_score=True,
+                ),
+            ),
+            acceptance_score=0.6,
+        )
+        frames = self.frames()
+        shot = ShotPlan(0, 0, 2, (1,))
+        grade = ExposureEditor("editor", 0.2).grade(frames[1], "", 1, 0)
+
+        result = ensemble.evaluate(
+            frames,
+            frames,
+            np.zeros((3, 12)),
+            np.zeros((3, 12)),
+            shot,
+            "natural",
+            (grade,),
+        )
+
+        self.assertTrue(result.accepted)
+        member = result.metadata["members"]["visual"]
+        self.assertFalse(member["accepted"])
+        self.assertTrue(member["effective_accepted"])
+
 
 if __name__ == "__main__":
     unittest.main()

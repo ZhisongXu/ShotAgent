@@ -189,6 +189,7 @@ def _critic_ensemble(
                 critic=critic,
                 weight=float(config.get("weight", 1.0)),
                 veto=bool(config.get("veto", critic_type == "metrics")),
+                accept_on_score=bool(config.get("accept_on_score", False)),
             )
         )
     return CriticEnsemble(members, acceptance_score), first_client

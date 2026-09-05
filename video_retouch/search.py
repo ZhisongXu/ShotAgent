@@ -541,6 +541,34 @@ class AestheticMCTSSearch:
             return 1.25
         return 1.12
 
+    @staticmethod
+    def _critic_parameter_adjustments(
+        critique: ShotCritique,
+    ) -> dict[str, float]:
+        """Find structured relative corrections inside direct/ensemble reviews."""
+
+        allowed = set(RetouchParameters().to_dict())
+
+        def visit(value: object) -> Optional[dict[str, float]]:
+            if not isinstance(value, dict):
+                return None
+            raw = value.get("parameter_adjustments")
+            if isinstance(raw, dict):
+                parsed = {
+                    str(name): float(np.clip(float(delta), -0.35, 0.35))
+                    for name, delta in raw.items()
+                    if str(name) in allowed and isinstance(delta, (int, float))
+                }
+                if any(abs(delta) > 1e-8 for delta in parsed.values()):
+                    return parsed
+            for child in value.values():
+                found = visit(child)
+                if found:
+                    return found
+            return None
+
+        return visit(critique.metadata) or {}
+
     def _amplify_evaluation(
         self,
         frames: Sequence[Image.Image],
@@ -550,7 +578,11 @@ class AestheticMCTSSearch:
         factor: float,
         hero_reference: Optional[HeroAnchorReference] = None,
     ) -> SearchEvaluation:
-        def amplify(values: np.ndarray) -> np.ndarray:
+        structured_adjustments = self._critic_parameter_adjustments(
+            evaluation.critique
+        )
+
+        def revise(values: np.ndarray) -> np.ndarray:
             external_reference = (
                 hero_reference is not None and hero_reference.frame_index < 0
             )
@@ -561,22 +593,26 @@ class AestheticMCTSSearch:
             lower[0] = max(PARAMETER_LOWER_BOUNDS[0], -0.65)
             upper[9] = min(PARAMETER_UPPER_BOUNDS[9], 0.55)
             lower[9] = max(PARAMETER_LOWER_BOUNDS[9], -0.55)
-            return np.clip(
-                np.asarray(values, dtype=np.float64) * factor,
-                lower,
-                upper,
-            )
+            revised = np.asarray(values, dtype=np.float64) * factor
+            if structured_adjustments:
+                current = RetouchParameters.from_vector(values).to_dict()
+                for name, delta in structured_adjustments.items():
+                    current[name] += delta
+                revised = RetouchParameters.from_mapping(
+                    current, clamp=True
+                ).to_vector()
+            return np.clip(revised, lower, upper)
 
         amplified_grades = tuple(
             replace(
                 grade,
                 parameters=RetouchParameters.from_vector(
-                    amplify(grade.parameters.to_vector()), clamp=True
+                    revise(grade.parameters.to_vector()), clamp=True
                 ),
                 preview=self.executor.apply(
                     frames[grade.frame_index],
                     RetouchParameters.from_vector(
-                        amplify(grade.parameters.to_vector()), clamp=True
+                        revise(grade.parameters.to_vector()), clamp=True
                     ),
                 ),
                 score=max(float(grade.score), float(evaluation.critique.score)),
@@ -585,6 +621,7 @@ class AestheticMCTSSearch:
                     **grade.metadata,
                     "critic_feedback_amplified": True,
                     "feedback_factor": factor,
+                    "structured_parameter_adjustments": structured_adjustments,
                     "feedback_source": list(evaluation.critique.reasons),
                 },
             )
@@ -614,12 +651,17 @@ class AestheticMCTSSearch:
             critique,
             reasons=(
                 *critique.reasons,
-                f"critic_feedback_amplified_by_{factor:.2f}x",
+                (
+                    "critic_feedback_structured_revision"
+                    if structured_adjustments
+                    else f"critic_feedback_amplified_by_{factor:.2f}x"
+                ),
             ),
             metadata={
                 **critique.metadata,
                 "critic_feedback_amplified": True,
                 "feedback_factor": factor,
+                "structured_parameter_adjustments": structured_adjustments,
                 "previous_reasons": list(evaluation.critique.reasons),
             },
         )
@@ -890,6 +932,66 @@ class AestheticMCTSSearch:
                 round_evaluations,
                 key=lambda value: (value.reward, value.critique.score),
             )
+            structured_revised = False
+            structured_adjustments = self._critic_parameter_adjustments(
+                best_rejected.critique
+            )
+            if (
+                hero_reference is not None
+                and hero_reference.frame_index < 0
+                and structured_adjustments
+            ):
+                revised = self._amplify_evaluation(
+                    frames,
+                    instruction,
+                    shot,
+                    best_rejected,
+                    1.0,
+                    hero_reference,
+                )
+                structured_revised = True
+                evaluations[
+                    (anchors, (*best_rejected.choices, -(len(attempts) + 1)))
+                ] = revised
+                attempts.append(
+                    GradeAttempt(
+                        attempt=len(attempts) + 1,
+                        anchor_frames=anchors,
+                        score=revised.critique.score,
+                        accepted=revised.critique.accepted,
+                        metrics=revised.critique.metrics,
+                        reasons=revised.critique.reasons,
+                        recommended_anchor=revised.critique.recommended_anchor,
+                        metadata={
+                            **revised.critique.metadata,
+                            "structured_critic_revision": True,
+                            "source_attempt": len(attempts),
+                        },
+                    )
+                )
+                rounds[-1]["structured_critic_revision"] = {
+                    "adjustments": structured_adjustments,
+                    "score": revised.critique.score,
+                    "accepted": revised.critique.accepted,
+                }
+                if revised.critique.accepted:
+                    return SearchOutcome(
+                        selected=revised,
+                        attempts=tuple(attempts),
+                        memory=self._memory(
+                            candidate_grid,
+                            evaluations,
+                            rounds,
+                            revised,
+                            False,
+                            hero_reference,
+                        ),
+                    )
+                if (revised.reward, revised.critique.score) > (
+                    best_rejected.reward,
+                    best_rejected.critique.score,
+                ):
+                    best_rejected = revised
             next_anchor = best_rejected.critique.recommended_anchor
             if (
                 next_anchor is None
@@ -906,6 +1008,17 @@ class AestheticMCTSSearch:
                     None,
                 )
             if next_anchor is None:
+                if structured_revised:
+                    rounds[-1].update(
+                        {
+                            "rolled_back": True,
+                            "rollback_reasons": list(
+                                best_rejected.critique.reasons
+                            ),
+                            "anchor_action": "structured_revision",
+                        }
+                    )
+                    break
                 feedback_factor = self._strength_feedback_factor(
                     best_rejected.critique
                 )
@@ -987,7 +1100,10 @@ class AestheticMCTSSearch:
             )
 
         best_unaccepted = (
-            max(evaluations.values(), key=lambda value: (value.reward, value.critique.score))
+            max(
+                evaluations.values(),
+                key=lambda value: (value.critique.score, value.reward),
+            )
             if evaluations
             else None
         )

@@ -109,6 +109,39 @@ class RejectingCritic:
         )
 
 
+class CorrectiveCritic:
+    name = "corrective-test-critic"
+
+    def __init__(self):
+        self.calls = 0
+
+    def evaluate(self, *args, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            return ShotCritique(
+                score=0.4,
+                accepted=False,
+                metrics={"style": 0.4},
+                reasons=("shadows are lifted too far",),
+                recommended_anchor=None,
+                metadata={
+                    "review": {
+                        "parameter_adjustments": {
+                            "exposure": -0.2,
+                            "shadows": -0.15,
+                        }
+                    }
+                },
+            )
+        return ShotCritique(
+            score=0.85,
+            accepted=True,
+            metrics={"style": 0.85},
+            reasons=(),
+            recommended_anchor=None,
+        )
+
+
 class FakeAnchorVisionClient:
     model_id = "test/anchor-vision-model"
 
@@ -247,6 +280,30 @@ class DynamicGradePipelineTest(unittest.TestCase):
         self.assertGreater(np.abs(result.frame_parameters).sum(), 0.0)
         self.assertTrue(shot.parameter_keyframes)
 
+    def test_external_reference_applies_structured_critic_revision(self) -> None:
+        critic = CorrectiveCritic()
+        pipeline = DynamicGradePipeline(
+            shot_planner=FixedShotPlanner(),
+            anchor_backend=FixedAnchorBackend(),
+            critic=critic,
+            maximum_attempts=1,
+        )
+
+        result = pipeline.run(
+            self._frames(),
+            fps=5.0,
+            instruction="match the reference",
+            reference_frames=self._frames(),
+        )
+
+        shot = result.shots[0]
+        self.assertTrue(shot.accepted)
+        self.assertEqual(critic.calls, 2)
+        self.assertTrue(shot.attempts[-1].metadata["structured_critic_revision"])
+        self.assertIn(
+            "critic_feedback_structured_revision", shot.attempts[-1].reasons
+        )
+
     def test_image_only_backend_result_is_recovered_as_parameters(self) -> None:
         array = np.linspace(20, 180, 20 * 24 * 3, dtype=np.uint8).reshape(20, 24, 3)
         source = Image.fromarray(array, mode="RGB")
@@ -354,6 +411,12 @@ class DynamicGradePipelineTest(unittest.TestCase):
 
         self.assertEqual(len(grades), 1)
         self.assertIn("Batch Anchor grading request", client.prompts[0])
+        self.assertEqual(client.image_counts[0], 4)
+        self.assertIsNotNone(grades[0].metadata["mkl_prior"])
+        self.assertEqual(
+            grades[0].metadata["mkl_prior"]["semantic_decision"]["decision"],
+            "reject",
+        )
         self.assertGreaterEqual(abs(grades[0].parameters.temperature), 0.10)
         self.assertGreaterEqual(abs(grades[0].parameters.contrast), 0.12)
         self.assertGreaterEqual(abs(grades[0].parameters.vibrance), 0.14)

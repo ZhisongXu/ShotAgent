@@ -465,6 +465,7 @@ class CriticMember:
     critic: ShotCritic
     weight: float = 1.0
     veto: bool = False
+    accept_on_score: bool = False
 
     def __post_init__(self) -> None:
         if self.weight <= 0:
@@ -525,9 +526,24 @@ class CriticEnsemble:
             sum(member.weight * result.score for member, result in reviews)
             / total_weight
         )
-        vetoed = any(member.veto and not result.accepted for member, result in reviews)
+        effective_acceptance = {
+            member.critic.name: bool(
+                result.accepted
+                or (
+                    member.accept_on_score
+                    and result.score >= self.acceptance_score
+                )
+            )
+            for member, result in reviews
+        }
+        vetoed = any(
+            member.veto and not effective_acceptance[member.critic.name]
+            for member, _ in reviews
+        )
         accepted_weight = sum(
-            member.weight for member, result in reviews if result.accepted
+            member.weight
+            for member, _ in reviews
+            if effective_acceptance[member.critic.name]
         )
         accepted = (
             not vetoed
@@ -545,7 +561,7 @@ class CriticEnsemble:
             metrics.update(
                 {f"{name}.{key}": value for key, value in result.metrics.items()}
             )
-            if not result.accepted:
+            if not effective_acceptance[name]:
                 reasons.extend(f"{name}:{reason}" for reason in result.reasons)
             if result.recommended_anchor is not None:
                 recommendations.append(
@@ -556,6 +572,8 @@ class CriticEnsemble:
                 "veto": member.veto,
                 "score": result.score,
                 "accepted": result.accepted,
+                "effective_accepted": effective_acceptance[name],
+                "accept_on_score": member.accept_on_score,
                 "metadata": result.metadata,
             }
         recommended = (
