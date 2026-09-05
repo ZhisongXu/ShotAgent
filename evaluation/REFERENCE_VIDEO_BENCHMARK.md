@@ -151,10 +151,32 @@ python -m evaluation.run_nlut_baseline \
   --output outputs/nlut/sample.mp4
 ```
 
-Both adapters replace the repositories' old custom interpolation extensions
-with equivalent PyTorch implementations. They still load the published model
-weights and preserve the released inference logic. Record any resolution or
-memory adaptation beside the result.
+Run the official CAP-VSTNet photorealistic video checkpoint without semantic
+masks with:
+
+```bash
+python -m evaluation.run_cap_vstnet_baseline \
+  --repo-dir /path/to/cap-vstnet \
+  --checkpoint /path/to/photo_video.pt \
+  --target target.mp4 --reference reference.mp4 \
+  --output outputs/cap-vstnet/sample.mp4
+```
+
+Run the official CanonCGT self-supervised checkpoint with:
+
+```bash
+python -m evaluation.run_canoncgt_baseline \
+  --repo-dir /path/to/CanonCGT \
+  --checkpoint /path/to/SSL_updated_251111.pth \
+  --config /path/to/Stage3_SSL_training_Flickr2K_PPR10K_LSDIR.yaml \
+  --target target.mp4 --reference reference.mp4 \
+  --output outputs/canoncgt/sample.mp4
+```
+
+The SA-LUT and NLUT adapters replace the repositories' old custom interpolation
+extensions with equivalent PyTorch implementations. All four adapters load the
+published weights and preserve the released inference logic. Record any
+resolution or memory adaptation beside the result.
 
 The report schema is `reference-video-grade-benchmark/v4-no-gt`. It explicitly
 records that edit magnitude is descriptive and that no composite score exists.

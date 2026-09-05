@@ -1,6 +1,7 @@
 -r requirements.txt
 pyiqa>=0.1.16
 pillow_lut>=1.1
+PyYAML>=6
 torchvision>=0.29
 # CLIP-IQA in pyiqa 0.1.16 still imports pkg_resources.
 setuptools<82
