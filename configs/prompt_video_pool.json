@@ -1,0 +1,107 @@
+{
+  "storyboard": {
+    "provider": "openai_responses",
+    "base_url": "https://api.openai.com/v1",
+    "model": "gpt-5.6-sol",
+    "api_key_env": "OPENAI_API_KEY",
+    "reasoning_effort": "low",
+    "image_detail": "low",
+    "max_output_tokens": 4096,
+    "max_image_side": 640,
+    "long_video": {
+      "overview_frames": 12,
+      "window_seconds": 30.0,
+      "overlap_seconds": 2.0,
+      "max_window_images": 12,
+      "anchor_candidates_per_shot": 4,
+      "anchor_shots_per_call": 6,
+      "max_anchor_images_per_call": 24,
+      "hero_max_images_per_call": 16,
+      "hero_nominees_per_batch": 2,
+      "hero_candidate_count": 3,
+      "minimum_shot_seconds": 0.4
+    }
+  },
+  "editors": [
+    {
+      "name": "prompt-cinematic-colorist",
+      "type": "vision_model",
+      "provider": "openai_responses",
+      "base_url": "https://api.openai.com/v1",
+      "model": "gpt-5.6-sol",
+      "api_key_env": "OPENAI_API_KEY",
+      "reasoning_effort": "low",
+      "image_detail": "high",
+      "stages": ["lighting", "white_balance_and_color", "tone"],
+      "specialty": "translate only the supplied language into a decisive production-ready cinematic grade; separately plan black floor, shadow and midtone color, neutral axis, highlight shoulder, saturation hierarchy and local depth; never assume an external reference image",
+      "use_mkl_prior": false,
+      "direct_api_mode": true,
+      "max_output_tokens": 2048
+    },
+    {
+      "name": "prompt-palette-designer",
+      "type": "vision_model",
+      "provider": "openai_responses",
+      "base_url": "https://api.openai.com/v1",
+      "model": "gpt-5.6-sol",
+      "api_key_env": "OPENAI_API_KEY",
+      "reasoning_effort": "low",
+      "image_detail": "high",
+      "stages": ["white_balance_and_color", "tone"],
+      "specialty": "make the prompt's named palette, warm-cool separation, tonal hierarchy and genre cues clearly visible while avoiding a uniform global cast, semantic recoloring, monochrome collapse or excessive strength",
+      "use_mkl_prior": false,
+      "direct_api_mode": true,
+      "max_output_tokens": 2048
+    },
+    {
+      "name": "prompt-continuity-colorist",
+      "type": "vision_model",
+      "provider": "openai_responses",
+      "base_url": "https://api.openai.com/v1",
+      "model": "gpt-5.6-sol",
+      "api_key_env": "OPENAI_API_KEY",
+      "reasoning_effort": "low",
+      "image_detail": "high",
+      "stages": ["global_grade"],
+      "specialty": "preserve content, skin, neutral objects, texture and recoverable shadow/highlight detail while keeping one coherent prompt-driven grade across the entire shot; allow a strong visible change when it remains technically clean",
+      "use_mkl_prior": false,
+      "direct_api_mode": true,
+      "max_output_tokens": 1536
+    }
+  ],
+  "evaluators": [
+    {
+      "name": "prompt-grade-safety",
+      "type": "metrics",
+      "maximum_fidelity_l1": 0.24,
+      "maximum_clipping": 0.08,
+      "maximum_temporal_error": 0.03,
+      "maximum_parameter_jerk": 0.10,
+      "maximum_anchor_error": 0.10,
+      "weight": 1.0,
+      "veto": true
+    },
+    {
+      "name": "prompt-fulfillment-critic",
+      "type": "vision_model",
+      "provider": "openai_responses",
+      "base_url": "https://api.openai.com/v1",
+      "model": "gpt-5.6-sol",
+      "api_key_env": "OPENAI_API_KEY",
+      "reasoning_effort": "low",
+      "image_detail": "high",
+      "focus": "literal fulfillment of the supplied color-grading language, including the requested black floor, shadow and midtone palette, warm-cool relationship, saturation hierarchy, highlight roll-off, depth and genre mood; also require preserved content, plausible materials, clean skin and neutrals, stable frames and no clipping, haze or timid near-identity result",
+      "weight": 1.0,
+      "veto": false,
+      "accept_on_score": true
+    }
+  ],
+  "acceptance_score": 0.56,
+  "search": {
+    "maximum_evaluations": 4,
+    "maximum_hero_attempts": 1,
+    "exploration_constant": 1.0,
+    "rejection_penalty": 0.25,
+    "seed": 19
+  }
+}

@@ -20,6 +20,7 @@ from retouch_agent.parameters import (
     PARAMETER_NAMES,
     PARAMETER_UPPER_BOUNDS,
 )
+from retouch_video import load_env_file
 from video_retouch import DynamicGradePipeline, HeuristicShotPlanner, VLShotPlanner
 from video_retouch.agent_config import load_multi_agent_runtime
 from video_retouch.io import decode_video, encode_video
@@ -468,10 +469,14 @@ def evaluate_manifest(
             sample_max_frames = sample.get("max_frames", max_frames)
             if sample_max_frames is not None:
                 sample_max_frames = int(sample_max_frames)
+            sample_max_side = sample.get("max_side")
+            if sample_max_side is not None:
+                sample_max_side = int(sample_max_side)
             source = load_media(
                 _resolve_path(sample.get("input"), root, "input"),
                 fps=sample_fps,
                 max_frames=sample_max_frames,
+                max_side=sample_max_side,
             )
             pipeline, runtime_manifest = _build_pipeline(
                 agent_config, maximum_evaluations
@@ -599,6 +604,7 @@ def evaluate_manifest(
 
 
 def main() -> None:
+    load_env_file(Path(".env"))
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--agent-config", type=Path)

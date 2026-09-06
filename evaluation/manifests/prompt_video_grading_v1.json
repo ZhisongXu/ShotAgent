@@ -1,0 +1,97 @@
+{
+  "schema": "prompt-video-grade-manifest/v1",
+  "dataset": "NLUT official videos with frozen pure-language grading prompts",
+  "profile": "prompt_only_no_gt",
+  "protocol": {
+    "task": "target video plus text prompt to graded video, without visual reference or ground truth",
+    "pairing": "four frozen prompts applied to the same two source videos",
+    "frame_policy": "first 72 frames at native cadence, long side capped at 512 pixels",
+    "reference_policy": "no reference image, video, palette statistics, LUT, or hidden visual prior",
+    "aggregation": "compute each metric per prompt-video pair and macro-average"
+  },
+  "sources": {
+    "targets": "https://github.com/semchan/NLUT"
+  },
+  "samples": [
+    {
+      "id": "girl__neo-noir",
+      "input_id": "girl",
+      "style_id": "neo-noir",
+      "subset": "complex_cinematic",
+      "input": "../../outputs/reference_video_eval/modern_baselines/NLUT/data/girl.mp4",
+      "max_frames": 72,
+      "max_side": 512,
+      "instruction": "Create a restrained modern neo-noir thriller grade. Establish a cool steel-cyan neutral axis in shadows and lower midtones while keeping skin and practical lights selectively warm amber. Lower middle gray and deepen blacks without crushing hair, clothing, architecture, or text. Reduce background saturation, preserve selective red and amber story accents, use a firm toe, soft highlight shoulder, and moderate local contrast. Avoid a global teal wash, orange skin, clipped lights, gray haze, or changed object identity. Apply one stable grade across all frames."
+    },
+    {
+      "id": "city__neo-noir",
+      "input_id": "city",
+      "style_id": "neo-noir",
+      "subset": "complex_cinematic",
+      "input": "../../outputs/reference_video_eval/modern_baselines/NLUT/data/city.mp4",
+      "max_frames": 72,
+      "max_side": 512,
+      "instruction": "Create a restrained modern neo-noir thriller grade. Establish a cool steel-cyan neutral axis in shadows and lower midtones while keeping practical lights and sunlit surfaces selectively warm amber. Lower middle gray and deepen blacks without crushing architecture, clouds, signs, or fine texture. Reduce background saturation, preserve selective red and amber story accents, use a firm toe, soft highlight shoulder, and moderate local contrast. Avoid a global teal wash, clipped lights, gray haze, or changed object identity. Apply one stable grade across all frames."
+    },
+    {
+      "id": "girl__bleach-bypass",
+      "input_id": "girl",
+      "style_id": "bleach-bypass",
+      "subset": "complex_cinematic",
+      "input": "../../outputs/reference_video_eval/modern_baselines/NLUT/data/girl.mp4",
+      "max_frames": 72,
+      "max_side": 512,
+      "instruction": "Create a photochemical bleach-bypass war-thriller grade. Use cool silver-neutral shadows, dense but separated blacks, restrained overall chroma, and strong midtone texture. Keep skin slightly warm and alive rather than gray; subordinate foliage and blue clothing without erasing their material identity. Use gritty but controlled contrast, a compact highlight shoulder, and crisp depth. Avoid crushed hair, chalky skin, clipped whites, monochrome collapse, colored casts, halos, or temporal pumping."
+    },
+    {
+      "id": "city__bleach-bypass",
+      "input_id": "city",
+      "style_id": "bleach-bypass",
+      "subset": "complex_cinematic",
+      "input": "../../outputs/reference_video_eval/modern_baselines/NLUT/data/city.mp4",
+      "max_frames": 72,
+      "max_side": 512,
+      "instruction": "Create a photochemical bleach-bypass war-thriller grade. Use cool silver-neutral shadows, dense but separated blacks, restrained overall chroma, and strong architectural midtone texture. Keep sunlit surfaces slightly warm while subordinating blue sky and colorful facades without erasing material identity. Use gritty but controlled contrast, a compact highlight shoulder, and crisp depth. Avoid crushed buildings, clipped clouds, monochrome collapse, colored casts, halos, or temporal pumping."
+    },
+    {
+      "id": "girl__1970s-35mm",
+      "input_id": "girl",
+      "style_id": "1970s-35mm",
+      "subset": "complex_cinematic",
+      "input": "../../outputs/reference_video_eval/modern_baselines/NLUT/data/girl.mp4",
+      "max_frames": 72,
+      "max_side": 512,
+      "instruction": "Grade as a late-1970s 35mm period drama. Build warm cream highlights, tobacco and muted olive midtones, cooler open shadows, a gently lifted toe, and a soft film shoulder. Keep skin naturally warm with restrained red, reduce modern electric greens and blues, and preserve subtle secondary colors. Use moderate filmic contrast and quiet saturation with tactile texture and depth. Avoid orange wash, faded gray blacks, plastic skin, clipped highlights, crushed hair, or unstable color."
+    },
+    {
+      "id": "city__1970s-35mm",
+      "input_id": "city",
+      "style_id": "1970s-35mm",
+      "subset": "complex_cinematic",
+      "input": "../../outputs/reference_video_eval/modern_baselines/NLUT/data/city.mp4",
+      "max_frames": 72,
+      "max_side": 512,
+      "instruction": "Grade as a late-1970s 35mm period drama. Build warm cream highlights, tobacco and muted olive midtones, cooler open shadows, a gently lifted toe, and a soft film shoulder. Restrain modern cyan sky and vivid facade colors while preserving subtle secondary hues and natural stone and cloud separation. Use moderate filmic contrast, quiet saturation, tactile texture, and atmospheric depth. Avoid orange wash, faded gray blacks, clipped clouds, crushed buildings, or unstable color."
+    },
+    {
+      "id": "girl__luxury-pastel",
+      "input_id": "girl",
+      "style_id": "luxury-pastel",
+      "subset": "other_grading",
+      "input": "../../outputs/reference_video_eval/modern_baselines/NLUT/data/girl.mp4",
+      "max_frames": 72,
+      "max_side": 512,
+      "instruction": "Create a high-key luxury beauty-commercial grade. Keep clean neutral whites, soft peach-beige skin, airy pastel cyan and lavender secondary colors, open shadows, luminous midtones, and a very soft highlight shoulder. Use gentle contrast, polished clarity, and controlled moderate vibrance while preserving facial texture, hair detail, and natural foliage. Avoid pink skin, milky haze, weak blacks, neon pastels, clipped highlights, over-smoothing, or frame-to-frame exposure changes."
+    },
+    {
+      "id": "city__luxury-pastel",
+      "input_id": "city",
+      "style_id": "luxury-pastel",
+      "subset": "other_grading",
+      "input": "../../outputs/reference_video_eval/modern_baselines/NLUT/data/city.mp4",
+      "max_frames": 72,
+      "max_side": 512,
+      "instruction": "Create a high-key luxury commercial grade. Keep clean neutral whites, airy pastel cyan and lavender secondary colors, open shadows, luminous midtones, and a very soft highlight shoulder. Use gentle contrast, polished clarity, and controlled moderate vibrance while preserving cloud texture, architectural edges, and natural material separation. Avoid magenta contamination, milky haze, weak structure, neon pastels, clipped clouds, over-smoothing, or frame-to-frame exposure changes."
+    }
+  ]
+}

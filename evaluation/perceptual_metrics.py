@@ -19,7 +19,7 @@ def _indices(length: int, count: int) -> np.ndarray:
 
 
 class LearnedMetricSuite:
-    """Reference-style, DINOv2, and MUSIQ metrics sampled over video frames."""
+    """CLIP, reference-style, DINOv2, and MUSIQ metrics sampled over video frames."""
 
     def __init__(
         self,
@@ -34,6 +34,8 @@ class LearnedMetricSuite:
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self._dino = None
         self._dino_preprocess = None
+        self._clip = None
+        self._clip_preprocess = None
         self.style_vgg_weights = style_vgg_weights
         self._style_vgg = None
         self._iqa: dict[str, object] = {}
@@ -92,6 +94,37 @@ class LearnedMetricSuite:
         return float(
             (target_features[:count] * output_features[:count]).sum(dim=-1).mean()
         )
+
+    def _load_clip(self) -> None:
+        if self._clip is not None:
+            return
+        import clip
+
+        self._clip, self._clip_preprocess = clip.load("RN50", device=self.device)
+        self._clip.eval()
+
+    def clip_prompt_similarity(
+        self, output: Sequence[Image.Image], prompt: str
+    ) -> float:
+        """Mean raw CLIP RN50 cosine similarity between sampled frames and prompt."""
+
+        import clip
+
+        self._load_clip()
+        images = self.torch.stack(
+            [self._clip_preprocess(frame) for frame in self._sample(output)]
+        ).to(self.device)
+        text = clip.tokenize([prompt], truncate=True).to(self.device)
+        with self.torch.inference_mode(), self._autocast():
+            image_features = self._clip.encode_image(images).float()
+            text_features = self._clip.encode_text(text).float()
+            image_features = image_features / image_features.norm(
+                dim=-1, keepdim=True
+            ).clamp_min(1e-8)
+            text_features = text_features / text_features.norm(
+                dim=-1, keepdim=True
+            ).clamp_min(1e-8)
+            return float((image_features @ text_features.T).mean())
 
     def _load_iqa(self, name: str):
         if name not in self._iqa:

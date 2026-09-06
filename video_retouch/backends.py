@@ -224,6 +224,7 @@ class VLAnchorBackend:
         mkl_strength: float = 0.35,
         mkl_projection_iterations: int = 40,
         specialty: str = "",
+        direct_api_mode: bool = False,
     ) -> None:
         if not stages:
             raise ValueError("VL Anchor grading requires at least one stage.")
@@ -238,6 +239,7 @@ class VLAnchorBackend:
         self.mkl_matcher = LinearMongeKantorovichMatcher(strength=mkl_strength)
         self.mkl_projection_iterations = int(mkl_projection_iterations)
         self.specialty = str(specialty).strip()
+        self.direct_api_mode = bool(direct_api_mode)
 
     def grade(
         self,
@@ -331,12 +333,13 @@ class VLAnchorBackend:
         hero_reference: Optional[HeroAnchorReference],
         mkl_metadata: Optional[dict[str, object]] = None,
     ) -> AnchorGrade:
-        if hero_reference is not None and hero_reference.frame_index < 0:
-            # External-reference mode is an API-editor pool: preserve each
-            # editor's visual proposal and let the pool critic compare the
-            # rendered candidates. The legacy single-image parameter search
-            # uses instruction-only targets and can incorrectly roll a valid
-            # reference match back to identity before the pool sees it.
+        if self.direct_api_mode or (
+            hero_reference is not None and hero_reference.frame_index < 0
+        ):
+            # Preserve the API editor's visual proposal and let the pool critic
+            # compare rendered candidates. The legacy single-image parameter
+            # search uses heuristic targets and can roll a valid prompt or
+            # reference match back before the pool sees it.
             final_parameters = RetouchParameters.from_mapping(
                 parameters.to_dict(), clamp=True
             )
@@ -352,9 +355,14 @@ class VLAnchorBackend:
                     "mean_model_confidence": (
                         float(np.mean(confidences)) if confidences else 0.0
                     ),
-                    "matched_to_external_reference_video": True,
-                    "reference_sampled_frames": hero_reference.grade.metadata.get(
-                        "sampled_frames"
+                    "direct_api_mode": self.direct_api_mode,
+                    "matched_to_external_reference_video": (
+                        hero_reference is not None and hero_reference.frame_index < 0
+                    ),
+                    "reference_sampled_frames": (
+                        None
+                        if hero_reference is None
+                        else hero_reference.grade.metadata.get("sampled_frames")
                     ),
                     "mkl_prior": mkl_metadata,
                     "api_stage_records": stage_records,

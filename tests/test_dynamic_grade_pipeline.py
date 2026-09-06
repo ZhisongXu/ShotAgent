@@ -379,6 +379,26 @@ class DynamicGradePipelineTest(unittest.TestCase):
         self.assertGreaterEqual(abs(grade.parameters.vibrance), 0.14)
         self.assertLessEqual(abs(grade.parameters.vibrance), 0.38)
 
+    def test_direct_api_mode_keeps_editor_parameters_without_legacy_search(self) -> None:
+        client = FakeAnchorVisionClient()
+        backend = VLAnchorBackend(
+            client,
+            stages=("lighting",),
+            candidate_count=1,
+            seed=2,
+            direct_api_mode=True,
+        )
+        source = Image.fromarray(
+            np.full((24, 28, 3), 100, dtype=np.uint8), mode="RGB"
+        )
+
+        grade = backend.grade(source, "make the shot darker", 4, 0)
+
+        self.assertTrue(grade.valid)
+        self.assertAlmostEqual(grade.parameters.exposure, 0.6)
+        self.assertTrue(grade.metadata["direct_api_mode"])
+        self.assertNotIn("plan", grade.metadata)
+
     def test_batch_anchor_matching_applies_assertive_strength_floor(self) -> None:
         client = FakeAnchorVisionClient()
         backend = VLAnchorBackend(
