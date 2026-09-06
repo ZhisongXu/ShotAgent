@@ -82,9 +82,11 @@ def test_attach_reference_style_similarity(tmp_path: Path) -> None:
 
     assert result["rows"][0]["llm_reference_style_similarity"] == 0.5
     assert result["rows"][0]["llm_reference_style_rating"] == 3.0
-    assert result["rows"][0]["llm_overall_grade_quality"] == 3.5
+    assert result["rows"][0]["llm_overall_grade_quality_rating"] == 3.5
+    assert result["rows"][0]["llm_overall_grade_quality"] == 0.625
     assert result["aggregate"]["method-a"]["llm_reference_style_similarity"] == 0.5
-    assert result["aggregate"]["method-a"]["llm_overall_grade_quality"] == 3.5
+    assert result["aggregate"]["method-a"]["llm_overall_grade_quality_rating"] == 3.5
+    assert result["aggregate"]["method-a"]["llm_overall_grade_quality"] == 0.625
     assert "llm_reference_style_similarity" in (tmp_path / "results.csv").read_text()
 
 

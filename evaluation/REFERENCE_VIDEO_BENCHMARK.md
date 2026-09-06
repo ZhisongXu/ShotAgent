@@ -54,7 +54,7 @@ an axis with more reported diagnostics from dominating the overall result.
 |---|---|---:|---|
 | Grading | VGG low-level style similarity | higher | Reference-conditioned color/texture feature statistics are closer |
 | Grading | LLM reference-style similarity | higher | An independent blinded vision model rates abstract grading similarity on a normalized 0--1 scale |
-| Grading/quality | LLM overall grade quality | higher | Equal mean of 1--5 style match, content preservation, temporal consistency and artifact-free ratings |
+| Grading/quality | LLM overall grade quality | higher | Equal mean of style match, content preservation, temporal consistency and artifact-free ratings, normalized from 1--5 to 0--1 |
 | Grading | Lab channel Wasserstein | lower | Mean marginal distribution distance over normalized L, a and b |
 | Grading | Lab sliced Wasserstein (SWD) | lower | Joint Lab distribution distance averaged over 64 fixed projections |
 | Grading | Lab histogram Bhattacharyya | higher | Natural 0--1 overlap coefficient averaged over the L, a and b histograms |
@@ -118,12 +118,14 @@ contrast/depth. Content preservation, temporal consistency, artifacts, and
 overall preference remain separate diagnostics. Record the judge model and
 prompt protocol, and report this score separately from VGG similarity.
 
-LLM overall grade quality remains on the original 1--5 scale. It gives equal
-weight to four separately scored axes: reference-style match, content
-preservation, temporal consistency, and artifact-free rendering. The four axis
-ratings remain in the review JSON so the headline score is auditable and no
-group of subcriteria receives extra weight. This derived score was added from
-the stored component ratings and must be frozen before subsequent evaluations.
+LLM overall grade quality is reported on a 0--1 scale using the fixed mapping
+`(rating - 1) / 4`. It gives equal weight to four separately scored axes:
+reference-style match, content preservation, temporal consistency, and
+artifact-free rendering. The original 1--5 mean is retained as
+`llm_overall_grade_quality_rating`, and the four axis ratings remain in the
+review JSON so the headline score is auditable and no group of subcriteria
+receives extra weight. This derived score was added from the stored component
+ratings and must be frozen before subsequent evaluations.
 
 The v4 judge prompt defines production-quality anchors for scores 1--5 and asks
 the evaluator to judge translated tonal/color relationships rather than literal

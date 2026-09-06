@@ -190,7 +190,7 @@ def attach_reference_style_similarity(
         for code, values in raw_scores.items()
         if code in code_to_method
     }
-    overall_quality_by_method = {
+    overall_quality_rating_by_method = {
         code_to_method[code]: (
             float(values["overall_grade_quality"])
             if "overall_grade_quality" in values
@@ -215,11 +215,17 @@ def attach_reference_style_similarity(
         if method in similarity_by_method:
             row["llm_reference_style_similarity"] = similarity_by_method[method]
             row["llm_reference_style_rating"] = reference_rating_by_method[method]
-            row["llm_overall_grade_quality"] = overall_quality_by_method[method]
+            row["llm_overall_grade_quality_rating"] = overall_quality_rating_by_method[
+                method
+            ]
+            row["llm_overall_grade_quality"] = (
+                overall_quality_rating_by_method[method] - 1.0
+            ) / 4.0
 
     llm_metrics = (
         "llm_reference_style_similarity",
         "llm_reference_style_rating",
+        "llm_overall_grade_quality_rating",
         "llm_overall_grade_quality",
     )
     for method, values in report["aggregate"].items():
@@ -272,8 +278,10 @@ def attach_reference_style_similarity(
         "judge_model": review["judge_model"],
         "scale": "normalized from 1-5 to 0-1",
         "overall_grade_quality": (
-            "unweighted mean of 1-5 reference-style match, content preservation, "
-            "temporal consistency, and artifact-free ratings"
+            "unweighted mean of reference-style match, content preservation, "
+            "temporal consistency, and artifact-free ratings; raw 1-5 value is "
+            "stored as llm_overall_grade_quality_rating and headline quality is "
+            "normalized with (rating - 1) / 4"
         ),
         "evidence": review["evidence"],
         "review_file": str(report_path.parent / "mllm_reference_style_review.json"),
