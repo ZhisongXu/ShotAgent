@@ -240,10 +240,11 @@ def run(
         sample_id = str(sample["id"])
         source_path = (root / sample["input"]).resolve()
         source = _load(source_path, sample)
-        outputs = {
-            "Identity": tuple(frame.copy() for frame in source.frames),
-            "Text2Preset": _preset(source.frames, str(sample["style_id"])),
-        }
+        outputs = {"Identity": tuple(frame.copy() for frame in source.frames)}
+        if bool(payload.get("include_text2preset", True)):
+            outputs["Text2Preset"] = _preset(
+                source.frames, str(sample["style_id"])
+            )
         for method, method_root in external.items():
             decoded = _load(_external_video(method_root, sample_id), sample)
             outputs[method] = _align_frames(decoded.frames, source)

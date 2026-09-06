@@ -1,0 +1,48 @@
+{
+  "schema": "prompt-video-grade-manifest/v1",
+  "dataset": "NLUT official videos, three-video prompt-only challenge split",
+  "profile": "prompt_only_no_gt",
+  "include_text2preset": false,
+  "protocol": {
+    "task": "target video plus text prompt to graded video, without visual reference or ground truth",
+    "selection": "three additional official NLUT videos selected before method execution for distinct highlight, skin, foliage, and motion challenges",
+    "frame_policy": "first 72 frames at native cadence, long side capped at 512 pixels",
+    "reference_policy": "no reference image, video, palette statistics, LUT, or hidden visual prior",
+    "aggregation": "compute each metric per prompt-video pair and macro-average"
+  },
+  "sources": {
+    "targets": "https://github.com/semchan/NLUT"
+  },
+  "samples": [
+    {
+      "id": "night__neo-noir",
+      "input_id": "night",
+      "style_id": "neo-noir",
+      "subset": "nlut3_complex_prompt",
+      "input": "../../outputs/reference_video_eval/modern_baselines/NLUT/data/night.mp4",
+      "max_frames": 72,
+      "max_side": 512,
+      "instruction": "Create a polished modern neo-noir city-night grade. Establish deep cool blue-black shadows with visible building separation, selectively emphasize cyan and magenta neon, and preserve small warm amber windows as contrasting accents. Keep the skyline neutral enough to avoid a global blue wash. Use a firm black toe, controlled midtone contrast, and a soft highlight shoulder that retains sign lettering, tower lights, and colored reflections on the water. Avoid crushed buildings, clipped neon, radioactive saturation, muddy reflections, halos, or frame-to-frame pumping."
+    },
+    {
+      "id": "pedestrian__1970s-35mm",
+      "input_id": "pedestrian",
+      "style_id": "1970s-35mm",
+      "subset": "nlut3_complex_prompt",
+      "input": "../../outputs/reference_video_eval/modern_baselines/NLUT/data/pedestrian.mp4",
+      "max_frames": 72,
+      "max_side": 512,
+      "instruction": "Grade this park sequence as a restrained late-1970s 35mm ensemble drama. Give sunlit foliage muted ochre and olive character, keep faces naturally warm and separated, cool the open shadows slightly, and subordinate modern electric-blue clothing without losing fabric detail. Use a gently lifted toe, moderate filmic contrast, quiet saturation, warm cream highlights, and a soft shoulder. Preserve individual skin tones, hair, tree texture, and moving pedestrians. Avoid orange skin, brown monochrome foliage, cyan shadows, clipped pavement, crushed coats, or temporal color shifts."
+    },
+    {
+      "id": "stream2__bleach-bypass",
+      "input_id": "stream2",
+      "style_id": "bleach-bypass",
+      "subset": "nlut3_complex_prompt",
+      "input": "../../outputs/reference_video_eval/modern_baselines/NLUT/data/stream2.mp4",
+      "max_frames": 72,
+      "max_side": 512,
+      "instruction": "Create a refined photochemical bleach-bypass outdoor-adventure grade. Build dense but separated forest shadows, restrained moss and foliage chroma, cool silver-cyan water, and crisp neutral-white rapids. Keep sunlit rocks subtly warm so the scene retains depth. Increase controlled midtone contrast and texture while using a compact soft shoulder to preserve foam and wet-stone highlights. Avoid radioactive greens, uniform cyan contamination, clipped white water, black foliage holes, crunchy halos, excessive sharpening, or flicker in the moving rapids."
+    }
+  ]
+}

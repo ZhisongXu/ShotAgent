@@ -13,6 +13,11 @@ sequence uses the first 72 frames at native cadence with the long side capped at
 512 pixels. The same source under four prompts tests whether the method follows
 language instead of returning one attractive default look.
 
+A separate three-video challenge split uses the official NLUT `night`,
+`pedestrian`, and `stream2` sequences with one content-specific complex prompt
+per video. Its manifest disables the style-ID-driven preset control so every
+ranked editor receives only the source video and prompt.
+
 ## Compared methods
 
 | Display name | Paper / implementation | Video adaptation |
@@ -96,3 +101,7 @@ methods together:
 
 The benchmark writes `report.json`, flat and aggregate CSV tables, anonymization
 keys, per-sample videos, and source/method comparison videos.
+
+For the smaller official-video challenge, substitute
+`prompt_video_grading_nlut3_v1.json` in the same commands and use a separate
+output directory such as `outputs/prompt_video_eval/nlut3_v1`.

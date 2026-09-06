@@ -32,6 +32,18 @@ def test_prompt_manifest_is_balanced_and_contains_no_visual_reference() -> None:
     assert all(len(sample["instruction"].split()) >= 35 for sample in samples)
 
 
+def test_nlut3_prompt_manifest_disables_privileged_style_id_preset() -> None:
+    payload = json.loads(
+        (
+            ROOT
+            / "evaluation/manifests/prompt_video_grading_nlut3_v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert payload["include_text2preset"] is False
+    assert len(payload["samples"]) == 3
+    assert all("reference" not in sample for sample in payload["samples"])
+
+
 def test_prompt_preset_changes_color_without_changing_geometry() -> None:
     pixels = np.zeros((24, 32, 3), dtype=np.uint8)
     pixels[..., 0] = np.arange(32, dtype=np.uint8)[None] * 7
