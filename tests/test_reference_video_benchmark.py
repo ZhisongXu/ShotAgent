@@ -4,7 +4,10 @@ import numpy as np
 from PIL import Image
 
 from evaluation.reference_video_benchmark import (
+    LAB_SLICED_WASSERSTEIN_UPPER_BOUND,
+    LAB_WASSERSTEIN_UPPER_BOUND,
     VideoData,
+    bounded_lab_similarity,
     global_reinhard,
     lab_sliced_wasserstein_distance,
     lab_wasserstein_distance,
@@ -72,6 +75,38 @@ class ReferenceVideoBenchmarkTests(unittest.TestCase):
         self.assertGreater(lab_wasserstein_distance(output.frames, reference.frames), 0)
         self.assertGreater(
             lab_sliced_wasserstein_distance(output.frames, reference.frames), 0
+        )
+
+    def test_bounded_lab_similarity_has_fixed_data_independent_scale(self) -> None:
+        self.assertEqual(bounded_lab_similarity(0.0, LAB_WASSERSTEIN_UPPER_BOUND), 1.0)
+        self.assertEqual(
+            bounded_lab_similarity(
+                LAB_WASSERSTEIN_UPPER_BOUND, LAB_WASSERSTEIN_UPPER_BOUND
+            ),
+            0.0,
+        )
+        self.assertAlmostEqual(
+            bounded_lab_similarity(0.3, LAB_SLICED_WASSERSTEIN_UPPER_BOUND), 0.9
+        )
+
+    def test_metrics_report_lab_distances_and_bounded_similarities(self) -> None:
+        target = _video((30, 90, 45))
+        reference = _video((160, 110, 70))
+
+        result = metrics(target, target.frames, reference=reference)
+
+        self.assertAlmostEqual(
+            result["lab_wasserstein_similarity"],
+            bounded_lab_similarity(
+                result["lab_wasserstein_distance"], LAB_WASSERSTEIN_UPPER_BOUND
+            ),
+        )
+        self.assertAlmostEqual(
+            result["lab_sliced_wasserstein_similarity"],
+            bounded_lab_similarity(
+                result["lab_sliced_wasserstein_distance"],
+                LAB_SLICED_WASSERSTEIN_UPPER_BOUND,
+            ),
         )
 
 

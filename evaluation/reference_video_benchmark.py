@@ -120,6 +120,20 @@ def lab_sliced_wasserstein_distance(
     return float(np.mean(np.abs(output_projections - reference_projections)))
 
 
+# Normalized Lab uses L in [0, 1] and nominal a/b in [-1, 1].  The mean of
+# the three marginal ranges is therefore 5/3, while the diameter of the joint
+# Lab box is 3.  These data-independent bounds turn the distances into readable
+# [0, 1] similarities without changing their ordering.
+LAB_WASSERSTEIN_UPPER_BOUND = 5.0 / 3.0
+LAB_SLICED_WASSERSTEIN_UPPER_BOUND = 3.0
+
+
+def bounded_lab_similarity(distance: float, upper_bound: float) -> float:
+    """Convert a normalized-Lab distribution distance to a bounded similarity."""
+
+    return float(np.clip(1.0 - distance / upper_bound, 0.0, 1.0))
+
+
 def _reinhard_fit(
     source: np.ndarray, reference: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -213,6 +227,8 @@ METRIC_DIRECTIONS = {
     "llm_reference_style_similarity": "higher",
     "lab_wasserstein_distance": "lower",
     "lab_sliced_wasserstein_distance": "lower",
+    "lab_wasserstein_similarity": "higher",
+    "lab_sliced_wasserstein_similarity": "higher",
     "content_structure_correlation": "higher",
     "edge_ssim": "higher",
     "dino_content_similarity": "higher",
@@ -432,11 +448,17 @@ def metrics(
         "new_highlight_clip_fraction": max(0.0, highlight_clip - source_highlight_clip),
     }
     if reference is not None:
-        values["lab_wasserstein_distance"] = lab_wasserstein_distance(
+        lab_wasserstein = lab_wasserstein_distance(output, reference.frames)
+        lab_sliced_wasserstein = lab_sliced_wasserstein_distance(
             output, reference.frames
         )
-        values["lab_sliced_wasserstein_distance"] = lab_sliced_wasserstein_distance(
-            output, reference.frames
+        values["lab_wasserstein_distance"] = lab_wasserstein
+        values["lab_sliced_wasserstein_distance"] = lab_sliced_wasserstein
+        values["lab_wasserstein_similarity"] = bounded_lab_similarity(
+            lab_wasserstein, LAB_WASSERSTEIN_UPPER_BOUND
+        )
+        values["lab_sliced_wasserstein_similarity"] = bounded_lab_similarity(
+            lab_sliced_wasserstein, LAB_SLICED_WASSERSTEIN_UPPER_BOUND
         )
     if learned_suite is not None:
         if reference is None:
