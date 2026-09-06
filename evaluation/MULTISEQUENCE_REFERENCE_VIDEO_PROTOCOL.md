@@ -66,19 +66,19 @@ the supplied blinded A/B human-review forms with at least three raters.
 
 ## Results on the nine-sequence protocol
 
-Values are macro mean ± sample standard deviation. LLM values use the
-judge's original 1--5 scale; the machine-readable report additionally stores
-the equivalent `(rating - 1) / 4` value.
+Values are macro mean ± sample standard deviation. LLM overall grade quality
+uses the judge's original 1--5 scale. Its four component ratings and the
+style-only LLM score remain in the machine-readable report.
 
-### Reference grading similarity
+### Headline grading evaluation
 
-| Paper method | LLM overall grade quality ↑ (1--5) | LLM reference style ↑ (1--5) | VGG style ↑ | Lab chroma BC ↑ |
-|---|---:|---:|---:|---:|
-| SA-LUT | 3.242 ± 0.479 | 2.214 ± 0.417 | 0.8966 ± 0.0322 | 0.7757 ± 0.1487 |
-| NLUT | 4.211 ± 0.393 | 3.732 ± 0.617 | 0.9472 ± 0.0233 | 0.9349 ± 0.0345 |
-| CAP-VSTNet | 3.552 ± 0.579 | **3.799 ± 0.297** | **0.9757 ± 0.0107** | **0.9680 ± 0.0141** |
-| **CanonCGT** | **4.412 ± 0.111** | 3.327 ± 0.610 | 0.9063 ± 0.0383 | 0.7794 ± 0.1893 |
-| **ShotAgent API Editor Pool** | 4.305 ± 0.302 | 3.352 ± 0.585 | 0.9114 ± 0.0384 | 0.9113 ± 0.0630 |
+| Paper method | LLM overall grade quality ↑ (1--5) | VGG style ↑ | Lab chroma BC ↑ |
+|---|---:|---:|---:|
+| SA-LUT | 3.242 ± 0.479 | 0.8966 ± 0.0322 | 0.7757 ± 0.1487 |
+| NLUT | 4.211 ± 0.393 | 0.9472 ± 0.0233 | 0.9349 ± 0.0345 |
+| CAP-VSTNet | 3.552 ± 0.579 | **0.9757 ± 0.0107** | **0.9680 ± 0.0141** |
+| **CanonCGT** | **4.412 ± 0.111** | 0.9063 ± 0.0383 | 0.7794 ± 0.1893 |
+| **ShotAgent API Editor Pool** | 4.305 ± 0.302 | 0.9114 ± 0.0384 | 0.9113 ± 0.0630 |
 
 ### Content, temporal stability, artifacts, and quality
 
