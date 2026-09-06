@@ -92,18 +92,19 @@ the equivalent `(rating - 1) / 4` value.
 
 ### Mean per-sequence rank by axis
 
-| Method | Style (3 metrics) ↓ | Content (3) ↓ | Temporal (3) ↓ | Quality/artifact (3) ↓ |
-|---|---:|---:|---:|---:|
-| SA-LUT | 4.592 | 3.407 | 4.259 | 3.519 |
-| NLUT | 2.222 | 3.815 | 2.630 | 3.148 |
-| CAP-VSTNet | **1.296** | 4.519 | 2.630 | 3.741 |
-| CanonCGT | 3.741 | 1.667 | 3.407 | 2.370 |
-| **ShotAgent API Editor Pool** | 3.148 | **1.593** | **2.074** | **2.222** |
+| Method | Overall ↓ | Style (3 metrics) ↓ | Content (3) ↓ | Temporal (3) ↓ | Quality/artifact (3) ↓ |
+|---|---:|---:|---:|---:|---:|
+| SA-LUT | 3.944 | 4.592 | 3.407 | 4.259 | 3.519 |
+| NLUT | 2.954 | 2.222 | 3.815 | 2.630 | 3.148 |
+| CAP-VSTNet | 3.046 | **1.296** | 4.519 | 2.630 | 3.741 |
+| CanonCGT | 2.796 | 3.741 | 1.667 | 3.407 | 2.370 |
+| **ShotAgent API Editor Pool** | **2.259** | 3.148 | **1.593** | **2.074** | **2.222** |
 
 ShotAgent leads the content, temporal, and quality/artifact axis ranks and is
 second on LLM overall grade quality by macro mean. CAP-VSTNet leads pure
 reference-style similarity. ShotAgent is third by the LLM reference-style, VGG,
-and Lab chroma histogram BC means. The result
+and Lab chroma histogram BC means. Equal weighting of the four axis ranks gives
+ShotAgent the best overall rank. The result
 identifies reference tonal-hierarchy matching as the remaining weakness rather
 than content preservation or temporal stability.
 

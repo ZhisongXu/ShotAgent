@@ -16,6 +16,59 @@ from scipy.stats import rankdata
 from video_retouch.clients import OpenAIResponsesVisionClient
 from video_retouch.io import decode_video
 
+AXIS_METRICS = {
+    "style": (
+        "llm_reference_style_rating",
+        "vgg_style_similarity",
+        "lab_chroma_histogram_bhattacharyya",
+    ),
+    "content": (
+        "content_structure_correlation",
+        "dino_content_similarity",
+        "edge_ssim",
+    ),
+    "temporal": (
+        "temporal_flow_warp_error",
+        "temporal_edit_warp_error",
+        "temporal_transform_drift",
+    ),
+    "quality_artifact": (
+        "musiq_score",
+        "new_shadow_clip_fraction",
+        "new_highlight_clip_fraction",
+    ),
+}
+
+
+def attach_axis_rank_summary(report: dict[str, object]) -> dict[str, object]:
+    """Attach equal-metric axis ranks and an equal-axis overall rank."""
+
+    average_ranks = report.get("average_ranks")
+    if not isinstance(average_ranks, dict):
+        return report
+    axis_ranks: dict[str, dict[str, float]] = {}
+    overall_ranks: dict[str, float] = {}
+    for method, raw_ranks in average_ranks.items():
+        if not isinstance(raw_ranks, dict):
+            continue
+        method_axes: dict[str, float] = {}
+        for axis, metrics in AXIS_METRICS.items():
+            if all(metric in raw_ranks for metric in metrics):
+                method_axes[axis] = float(
+                    np.mean([float(raw_ranks[metric]) for metric in metrics])
+                )
+        axis_ranks[str(method)] = method_axes
+        if len(method_axes) == len(AXIS_METRICS):
+            overall_ranks[str(method)] = float(np.mean(list(method_axes.values())))
+    report["axis_average_ranks"] = axis_ranks
+    report["overall_axis_average_rank"] = overall_ranks
+    report["axis_rank_policy"] = {
+        "direction": "lower is better",
+        "axis_metrics": {axis: list(metrics) for axis, metrics in AXIS_METRICS.items()},
+        "overall": "unweighted mean of the four axis-average ranks",
+    }
+    return report
+
 
 def _load_env(path: Path) -> None:
     if not path.is_file():
@@ -214,6 +267,7 @@ def attach_reference_style_similarity(
                     report["average_ranks"][method][metric] = float(
                         np.mean(ranks[method])
                     )
+    attach_axis_rank_summary(report)
     report["llm_reference_style_evaluation"] = {
         "judge_model": review["judge_model"],
         "scale": "normalized from 1-5 to 0-1",
@@ -256,6 +310,14 @@ def attach_reference_style_similarity(
                     aggregate_row[f"{metric}_average_rank"] = report["average_ranks"][
                         method
                     ][metric]
+            for axis, rank in (
+                report.get("axis_average_ranks", {}).get(method, {}).items()
+            ):
+                aggregate_row[f"{axis}_axis_average_rank"] = rank
+            if method in report.get("overall_axis_average_rank", {}):
+                aggregate_row["overall_axis_average_rank"] = report[
+                    "overall_axis_average_rank"
+                ][method]
             aggregate_rows.append(aggregate_row)
         aggregate_columns = list(
             dict.fromkeys(key for row in aggregate_rows for key in row)

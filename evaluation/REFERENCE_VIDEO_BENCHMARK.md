@@ -44,6 +44,12 @@ Candidate videos have anonymous codes under `blind_review_media/`. Keep
 
 These metrics diagnose failure modes and never replace the style-match review.
 
+The report also aggregates per-sequence method ranks without mixing metric
+scales. Style, content, temporal, and quality/artifact each contain three
+predeclared metrics. Metrics are averaged within each axis, then the four axis
+ranks receive equal weight in the overall rank. Lower is better. This prevents
+an axis with more reported diagnostics from dominating the overall result.
+
 | Axis | Metric | Direction | Interpretation |
 |---|---|---:|---|
 | Grading | VGG low-level style similarity | higher | Reference-conditioned color/texture feature statistics are closer |

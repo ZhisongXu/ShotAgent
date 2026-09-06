@@ -1,7 +1,11 @@
 import json
 from pathlib import Path
 
-from evaluation.blind_video_judge import _validate, attach_reference_style_similarity
+from evaluation.blind_video_judge import (
+    _validate,
+    attach_axis_rank_summary,
+    attach_reference_style_similarity,
+)
 
 
 def test_validate_derives_style_similarity_from_style_only_dimensions() -> None:
@@ -82,3 +86,34 @@ def test_attach_reference_style_similarity(tmp_path: Path) -> None:
     assert result["aggregate"]["method-a"]["llm_reference_style_similarity"] == 0.5
     assert result["aggregate"]["method-a"]["llm_overall_grade_quality"] == 3.5
     assert "llm_reference_style_similarity" in (tmp_path / "results.csv").read_text()
+
+
+def test_attach_axis_rank_summary_uses_equal_axis_weights() -> None:
+    report = {
+        "average_ranks": {
+            "method-a": {
+                "llm_reference_style_rating": 1.0,
+                "vgg_style_similarity": 2.0,
+                "lab_chroma_histogram_bhattacharyya": 3.0,
+                "content_structure_correlation": 2.0,
+                "dino_content_similarity": 2.0,
+                "edge_ssim": 2.0,
+                "temporal_flow_warp_error": 3.0,
+                "temporal_edit_warp_error": 3.0,
+                "temporal_transform_drift": 3.0,
+                "musiq_score": 4.0,
+                "new_shadow_clip_fraction": 4.0,
+                "new_highlight_clip_fraction": 4.0,
+            }
+        }
+    }
+
+    result = attach_axis_rank_summary(report)
+
+    assert result["axis_average_ranks"]["method-a"] == {
+        "style": 2.0,
+        "content": 2.0,
+        "temporal": 3.0,
+        "quality_artifact": 4.0,
+    }
+    assert result["overall_axis_average_rank"]["method-a"] == 2.75
