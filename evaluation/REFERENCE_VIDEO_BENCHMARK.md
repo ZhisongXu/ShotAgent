@@ -48,9 +48,11 @@ These metrics diagnose failure modes and never replace the style-match review.
 |---|---|---:|---|
 | Grading | VGG low-level style similarity | higher | Reference-conditioned color/texture feature statistics are closer |
 | Grading | LLM reference-style similarity | higher | An independent blinded vision model rates abstract grading similarity on a normalized 0--1 scale |
+| Grading/quality | LLM overall grade quality | higher | Equal mean of 1--5 style match, content preservation, temporal consistency and artifact-free ratings |
 | Grading | Lab channel Wasserstein | lower | Mean marginal distribution distance over normalized L, a and b |
 | Grading | Lab sliced Wasserstein (SWD) | lower | Joint Lab distribution distance averaged over 64 fixed projections |
 | Grading | Lab histogram Bhattacharyya | higher | Natural 0--1 overlap coefficient averaged over the L, a and b histograms |
+| Grading | Lab chroma histogram Bhattacharyya | higher | Natural 0--1 overlap coefficient averaged over only the a and b color histograms |
 | Content | Local-normalised structure correlation | higher | Geometry and visible texture survive the grade |
 | Content | Edge-SSIM | higher | Edge layout remains intact after the grade |
 | Content | DINOv2 cosine similarity | higher | Learned semantic/structural features remain close to the input |
@@ -95,6 +97,10 @@ zero (no histogram overlap) and one (identical histograms), without a fitted or
 post-hoc normalization scale. Like the Wasserstein metrics, it remains a
 cross-content palette diagnostic rather than a complete style judgement.
 
+The chroma-only variant averages the same coefficients over a and b while
+leaving luminance out. This separates palette overlap from scene-dependent
+brightness and is the Bhattacharyya metric used in the compact grading table.
+
 LLM reference-style similarity is the anonymized judge's 1--5
 `reference_style_match` rating normalized to 0--1. The judge sees the target,
 reference, and eight ordered output frames, and is explicitly instructed not to
@@ -105,6 +111,13 @@ axis/temperature, palette hierarchy, saturation hierarchy, and local
 contrast/depth. Content preservation, temporal consistency, artifacts, and
 overall preference remain separate diagnostics. Record the judge model and
 prompt protocol, and report this score separately from VGG similarity.
+
+LLM overall grade quality remains on the original 1--5 scale. It gives equal
+weight to four separately scored axes: reference-style match, content
+preservation, temporal consistency, and artifact-free rendering. The four axis
+ratings remain in the review JSON so the headline score is auditable and no
+group of subcriteria receives extra weight. This derived score was added from
+the stored component ratings and must be frozen before subsequent evaluations.
 
 ## Reference-affinity editor in the API pool
 

@@ -6,6 +6,7 @@ from PIL import Image
 from evaluation.reference_video_benchmark import (
     VideoData,
     global_reinhard,
+    lab_chroma_histogram_bhattacharyya,
     lab_histogram_bhattacharyya,
     lab_sliced_wasserstein_distance,
     lab_wasserstein_distance,
@@ -95,6 +96,10 @@ class ReferenceVideoBenchmarkTests(unittest.TestCase):
         self.assertAlmostEqual(
             result["lab_histogram_bhattacharyya"],
             lab_histogram_bhattacharyya(target.frames, reference.frames),
+        )
+        self.assertAlmostEqual(
+            result["lab_chroma_histogram_bhattacharyya"],
+            lab_chroma_histogram_bhattacharyya(target.frames, reference.frames),
         )
 
 

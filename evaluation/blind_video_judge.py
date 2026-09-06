@@ -94,6 +94,16 @@ def _validate(payload: dict[str, object], codes: Sequence[str]) -> dict[str, obj
         scores[code]["reference_style_match"] = float(
             np.mean([scores[code][field] for field in style_fields])
         )
+        scores[code]["overall_grade_quality"] = float(
+            np.mean(
+                [
+                    scores[code]["reference_style_match"],
+                    scores[code]["content_preservation"],
+                    scores[code]["temporal_consistency"],
+                    scores[code]["artifact_free"],
+                ]
+            )
+        )
         scores[code]["rationale"] = str(raw.get("rationale", ""))[:500]
     return {
         "candidate_scores": scores,
@@ -117,8 +127,31 @@ def attach_reference_style_similarity(
         for item in assignments
         if str(item["sample"]) == sample
     }
+    reference_rating_by_method = {
+        code_to_method[code]: float(values["reference_style_match"])
+        for code, values in raw_scores.items()
+        if code in code_to_method
+    }
     similarity_by_method = {
         code_to_method[code]: (float(values["reference_style_match"]) - 1.0) / 4.0
+        for code, values in raw_scores.items()
+        if code in code_to_method
+    }
+    overall_quality_by_method = {
+        code_to_method[code]: (
+            float(values["overall_grade_quality"])
+            if "overall_grade_quality" in values
+            else float(
+                np.mean(
+                    [
+                        values["reference_style_match"],
+                        values["content_preservation"],
+                        values["temporal_consistency"],
+                        values["artifact_free"],
+                    ]
+                )
+            )
+        )
         for code, values in raw_scores.items()
         if code in code_to_method
     }
@@ -128,22 +161,30 @@ def attach_reference_style_similarity(
         method = str(row["method"])
         if method in similarity_by_method:
             row["llm_reference_style_similarity"] = similarity_by_method[method]
+            row["llm_reference_style_rating"] = reference_rating_by_method[method]
+            row["llm_overall_grade_quality"] = overall_quality_by_method[method]
+
+    llm_metrics = (
+        "llm_reference_style_similarity",
+        "llm_reference_style_rating",
+        "llm_overall_grade_quality",
+    )
     for method, values in report["aggregate"].items():
-        method_scores = [
-            float(row["llm_reference_style_similarity"])
-            for row in report["rows"]
-            if row["method"] == method and "llm_reference_style_similarity" in row
-        ]
-        if method_scores:
+        for metric in llm_metrics:
+            method_scores = [
+                float(row[metric])
+                for row in report["rows"]
+                if row["method"] == method and metric in row
+            ]
+            if not method_scores:
+                continue
             scores = np.asarray(method_scores, dtype=np.float64)
             mean = float(np.mean(scores))
             std = float(np.std(scores, ddof=1)) if len(scores) > 1 else 0.0
             radius = 1.96 * std / np.sqrt(len(scores))
-            values["llm_reference_style_similarity"] = mean
+            values[metric] = mean
             if "aggregate_statistics" in report:
-                report["aggregate_statistics"][method][
-                    "llm_reference_style_similarity"
-                ] = {
+                report["aggregate_statistics"][method][metric] = {
                     "mean": mean,
                     "std": std,
                     "ci95_low": mean - radius,
@@ -151,30 +192,35 @@ def attach_reference_style_similarity(
                     "n": len(scores),
                 }
     methods = list(report["aggregate"])
-    ranks: dict[str, list[float]] = {method: [] for method in methods}
     samples = sorted({str(row["sample"]) for row in report["rows"]})
-    for sample_id in samples:
-        sample_rows = {
-            str(row["method"]): float(row["llm_reference_style_similarity"])
-            for row in report["rows"]
-            if row["sample"] == sample_id and "llm_reference_style_similarity" in row
-        }
-        if len(sample_rows) != len(methods):
-            continue
-        sample_ranks = rankdata(
-            [-sample_rows[method] for method in methods], method="average"
-        )
-        for method, rank in zip(methods, sample_ranks):
-            ranks[method].append(float(rank))
-    if "average_ranks" in report:
-        for method in methods:
-            if ranks[method]:
-                report["average_ranks"][method]["llm_reference_style_similarity"] = (
-                    float(np.mean(ranks[method]))
-                )
+    for metric in llm_metrics:
+        ranks: dict[str, list[float]] = {method: [] for method in methods}
+        for sample_id in samples:
+            sample_rows = {
+                str(row["method"]): float(row[metric])
+                for row in report["rows"]
+                if row["sample"] == sample_id and metric in row
+            }
+            if len(sample_rows) != len(methods):
+                continue
+            sample_ranks = rankdata(
+                [-sample_rows[method] for method in methods], method="average"
+            )
+            for method, rank in zip(methods, sample_ranks):
+                ranks[method].append(float(rank))
+        if "average_ranks" in report:
+            for method in methods:
+                if ranks[method]:
+                    report["average_ranks"][method][metric] = float(
+                        np.mean(ranks[method])
+                    )
     report["llm_reference_style_evaluation"] = {
         "judge_model": review["judge_model"],
         "scale": "normalized from 1-5 to 0-1",
+        "overall_grade_quality": (
+            "unweighted mean of 1-5 reference-style match, content preservation, "
+            "temporal consistency, and artifact-free ratings"
+        ),
         "evidence": review["evidence"],
         "review_file": str(report_path.parent / "mllm_reference_style_review.json"),
     }
@@ -277,7 +323,7 @@ Then judge these four diagnostic fields separately:
 - artifact_free: no clipping, crushing, halos, banding, unnatural casts or damaged skin/foliage;
 - overall_preference: holistic preference balancing all of the above.
 
-The evaluator computes reference_style_match as the unweighted mean of the nine style-only fields. Do not return that derived field yourself. Use the full 1-5 range when evidence warrants it. Identity may preserve content but should score poorly on style fields it does not transfer. Return JSON only:
+The evaluator computes reference_style_match as the unweighted mean of the nine style-only fields. It also computes overall_grade_quality as the unweighted mean of reference_style_match, content_preservation, temporal_consistency and artifact_free. Do not return those derived fields yourself. Use the full 1-5 range when evidence warrants it. Identity may preserve content but should score poorly on style fields it does not transfer. Return JSON only:
 {"candidate_scores":{"C01":{"deep_shadow_black_level_match":0,"shadow_chroma_match":0,"midtone_luminance_match":0,"midtone_palette_match":0,"highlight_rolloff_match":0,"neutral_axis_temperature_match":0,"palette_hierarchy_match":0,"saturation_hierarchy_match":0,"local_contrast_depth_match":0,"content_preservation":0,"temporal_consistency":0,"artifact_free":0,"overall_preference":0,"rationale":"..."}},"review_summary":"..."}
 Include every supplied candidate code exactly once. Do not guess method identities."""
     client = OpenAIResponsesVisionClient(

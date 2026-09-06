@@ -120,12 +120,12 @@ def lab_sliced_wasserstein_distance(
     return float(np.mean(np.abs(output_projections - reference_projections)))
 
 
-def lab_histogram_bhattacharyya(
+def _lab_histogram_bhattacharyya_coefficients(
     output: Sequence[Image.Image],
     reference: Sequence[Image.Image],
     bin_count: int = 64,
-) -> float:
-    """Mean Bhattacharyya coefficient of the normalized L, a, and b histograms."""
+) -> tuple[float, float, float]:
+    """Bhattacharyya coefficients of the normalized L, a, and b histograms."""
 
     output_pixels, reference_pixels = _matched_lab_samples(output, reference)
     ranges = ((0.0, 1.0), (-1.0, 1.0), (-1.0, 1.0))
@@ -142,7 +142,36 @@ def lab_histogram_bhattacharyya(
         coefficients.append(
             float(np.sum(np.sqrt(output_histogram * reference_histogram)))
         )
-    return float(np.mean(coefficients))
+    return coefficients[0], coefficients[1], coefficients[2]
+
+
+def lab_histogram_bhattacharyya(
+    output: Sequence[Image.Image],
+    reference: Sequence[Image.Image],
+    bin_count: int = 64,
+) -> float:
+    """Mean Bhattacharyya coefficient of the normalized L, a, and b histograms."""
+
+    return float(
+        np.mean(
+            _lab_histogram_bhattacharyya_coefficients(
+                output, reference, bin_count=bin_count
+            )
+        )
+    )
+
+
+def lab_chroma_histogram_bhattacharyya(
+    output: Sequence[Image.Image],
+    reference: Sequence[Image.Image],
+    bin_count: int = 64,
+) -> float:
+    """Mean natural overlap of the normalized a and b chroma histograms."""
+
+    coefficients = _lab_histogram_bhattacharyya_coefficients(
+        output, reference, bin_count=bin_count
+    )
+    return float(np.mean(coefficients[1:]))
 
 
 def _reinhard_fit(
@@ -236,9 +265,11 @@ METHOD_NAMES = tuple(BASELINES)
 METRIC_DIRECTIONS = {
     "vgg_style_similarity": "higher",
     "llm_reference_style_similarity": "higher",
+    "llm_overall_grade_quality": "higher",
     "lab_wasserstein_distance": "lower",
     "lab_sliced_wasserstein_distance": "lower",
     "lab_histogram_bhattacharyya": "higher",
+    "lab_chroma_histogram_bhattacharyya": "higher",
     "content_structure_correlation": "higher",
     "edge_ssim": "higher",
     "dino_content_similarity": "higher",
@@ -464,8 +495,14 @@ def metrics(
         )
         values["lab_wasserstein_distance"] = lab_wasserstein
         values["lab_sliced_wasserstein_distance"] = lab_sliced_wasserstein
-        values["lab_histogram_bhattacharyya"] = lab_histogram_bhattacharyya(
+        lab_histogram_coefficients = _lab_histogram_bhattacharyya_coefficients(
             output, reference.frames
+        )
+        values["lab_histogram_bhattacharyya"] = float(
+            np.mean(lab_histogram_coefficients)
+        )
+        values["lab_chroma_histogram_bhattacharyya"] = float(
+            np.mean(lab_histogram_coefficients[1:])
         )
     if learned_suite is not None:
         if reference is None:

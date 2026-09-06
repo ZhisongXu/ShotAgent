@@ -72,13 +72,13 @@ the equivalent `(rating - 1) / 4` value.
 
 ### Reference grading similarity
 
-| Paper method | LLM grade match ↑ (1--5) | VGG style ↑ | Lab histogram BC ↑ | Lab SWD ↓ |
+| Paper method | LLM overall grade quality ↑ (1--5) | LLM reference style ↑ (1--5) | VGG style ↑ | Lab chroma BC ↑ |
 |---|---:|---:|---:|---:|
-| SA-LUT | 2.300 ± 0.533 | 0.8966 ± 0.0322 | 0.8000 ± 0.1062 | 0.0901 ± 0.0497 |
-| NLUT | 3.952 ± 0.294 | 0.9472 ± 0.0233 | 0.8974 ± 0.0733 | 0.0562 ± 0.0383 |
-| **CAP-VSTNet** | **4.194 ± 0.266** | **0.9757 ± 0.0107** | **0.9474 ± 0.0285** | **0.0335 ± 0.0215** |
-| CanonCGT | 3.288 ± 0.606 | 0.9063 ± 0.0383 | 0.7853 ± 0.1471 | 0.0775 ± 0.0420 |
-| ShotAgent API Editor Pool | 3.406 ± 0.639 | 0.9114 ± 0.0384 | 0.8777 ± 0.0678 | 0.0794 ± 0.0504 |
+| SA-LUT | 3.414 ± 0.469 | 2.300 ± 0.533 | 0.8966 ± 0.0322 | 0.7757 ± 0.1487 |
+| NLUT | 4.280 ± 0.229 | 3.952 ± 0.294 | 0.9472 ± 0.0233 | 0.9349 ± 0.0345 |
+| CAP-VSTNet | 3.965 ± 0.336 | **4.194 ± 0.266** | **0.9757 ± 0.0107** | **0.9680 ± 0.0141** |
+| **CanonCGT** | **4.416 ± 0.107** | 3.288 ± 0.606 | 0.9063 ± 0.0383 | 0.7794 ± 0.1893 |
+| **ShotAgent API Editor Pool** | 4.379 ± 0.190 | 3.406 ± 0.639 | 0.9114 ± 0.0384 | 0.9113 ± 0.0630 |
 
 ### Content, temporal stability, artifacts, and quality
 
@@ -92,17 +92,18 @@ the equivalent `(rating - 1) / 4` value.
 
 ### Mean per-sequence rank by axis
 
-| Method | Style (4 metrics) ↓ | Content (3) ↓ | Temporal (3) ↓ | Quality/artifact (3) ↓ |
+| Method | Style (3 metrics) ↓ | Content (3) ↓ | Temporal (3) ↓ | Quality/artifact (3) ↓ |
 |---|---:|---:|---:|---:|
-| SA-LUT | 4.444 | 3.407 | 4.259 | 3.519 |
-| NLUT | 2.250 | 3.815 | 2.630 | 3.148 |
-| CAP-VSTNet | **1.222** | 4.519 | 2.630 | 3.741 |
-| CanonCGT | 3.778 | 1.667 | 3.407 | 2.370 |
-| **ShotAgent API Editor Pool** | 3.306 | **1.593** | **2.074** | **2.222** |
+| SA-LUT | 4.592 | 3.407 | 4.259 | 3.519 |
+| NLUT | 2.222 | 3.815 | 2.630 | 3.148 |
+| CAP-VSTNet | **1.296** | 4.519 | 2.630 | 3.741 |
+| CanonCGT | 3.741 | 1.667 | 3.407 | 2.370 |
+| **ShotAgent API Editor Pool** | 3.148 | **1.593** | **2.074** | **2.222** |
 
-ShotAgent leads the content, temporal, and quality/artifact axis ranks, while
-CAP-VSTNet leads reference-style similarity. ShotAgent's style rank is third by
-the LLM, VGG, and Lab histogram BC means, and fourth by Lab SWD. The result
+ShotAgent leads the content, temporal, and quality/artifact axis ranks and is
+second on LLM overall grade quality by macro mean. CAP-VSTNet leads pure
+reference-style similarity. ShotAgent is third by the LLM reference-style, VGG,
+and Lab chroma histogram BC means. The result
 identifies reference tonal-hierarchy matching as the remaining weakness rather
 than content preservation or temporal stability.
 
