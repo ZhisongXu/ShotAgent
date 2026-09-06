@@ -92,16 +92,16 @@ def _storyboard(path: Path, count: int = 8) -> Image.Image:
     cells = []
     for order, index in enumerate(indices.tolist(), start=1):
         image = decoded.frames[index].convert("RGB")
-        image.thumbnail((240, 135), Image.Resampling.LANCZOS)
-        cell = Image.new("RGB", (240, 157), "#111820")
-        cell.paste(image, ((240 - image.width) // 2, (135 - image.height) // 2))
-        ImageDraw.Draw(cell).text((7, 139), f"t{order:02d}", fill="white")
+        image.thumbnail((320, 180), Image.Resampling.LANCZOS)
+        cell = Image.new("RGB", (320, 204), "#111820")
+        cell.paste(image, ((320 - image.width) // 2, (180 - image.height) // 2))
+        ImageDraw.Draw(cell).text((8, 184), f"t{order:02d}", fill="white")
         cells.append(cell)
     columns = 4
     rows = (len(cells) + columns - 1) // columns
-    sheet = Image.new("RGB", (columns * 240, rows * 157), "#111820")
+    sheet = Image.new("RGB", (columns * 320, rows * 204), "#111820")
     for index, cell in enumerate(cells):
-        sheet.paste(cell, ((index % columns) * 240, (index // columns) * 157))
+        sheet.paste(cell, ((index % columns) * 320, (index // columns) * 204))
     return sheet
 
 
@@ -364,26 +364,30 @@ def main() -> None:
         (f"ANONYMOUS CANDIDATE {path.stem}, ordered frames", _storyboard(path))
         for path in candidates
     )
-    prompt = """You are an independent evaluator for reference-video controlled color grading with no ground truth.
+    prompt = """You are an independent evaluator of production-ready, reference-video controlled color grading with no ground truth.
 
-Judge anonymous candidates only from the supplied ordered storyboards. The TARGET defines content and geometry. The REFERENCE defines abstract grading style. Target and reference depict different content, so compare relationships and treatment rather than raw object colors or histograms. Do not reward a candidate merely for making a larger edit. Score style similarity independently from content preservation and artifacts: a candidate can match the style yet have poor preservation, and those failures belong in their separate fields.
+Judge anonymous candidates only from the supplied ordered storyboards. The TARGET defines the content, geometry, material identity, motion and recoverable detail. The REFERENCE defines the desired relationships among black level, tonal hierarchy, chroma, temperature, saturation, contrast, depth and mood. Because target and reference depict different content, evaluate whether the grading treatment has been translated appropriately to the target. Do not reward literal object-color or histogram coincidence, an indiscriminate global cast, or a larger edit by itself.
+
+Treat a professional grade as a constrained transfer. It should express the reference treatment clearly while remaining plausible and production-ready on the target. Exact palette proximity does not compensate for damaged detail, implausible materials, unstable frames or technical artifacts. Likewise, an almost unchanged target does not deserve a high style score merely because it is clean. Score every field independently before forming an overall opinion, and apply the same standard to every anonymous candidate.
 
 Give each candidate thirteen scores from 1.0 to 5.0. Judge these nine style fields independently:
 - deep_shadow_black_level_match: floor, crushing/lift and retained near-black separation;
-- shadow_chroma_match: shadow hue bias and chroma, separate from shadow brightness;
+- shadow_chroma_match: shadow hue bias and chroma, separate from shadow brightness, while retaining meaningful color separation;
 - midtone_luminance_match: middle-gray placement and the amount of open/luminous midtone detail;
-- midtone_palette_match: dominant midtone hue families and specific remapping such as green to olive/taupe;
+- midtone_palette_match: dominant midtone hue families and relational remapping such as green to olive/taupe, without forcing unrelated objects toward one hue;
 - highlight_rolloff_match: shoulder softness, diffuse-highlight brightness and specular containment;
 - neutral_axis_temperature_match: white/gray balance from shadows through highlights, including warm/cool separation;
-- palette_hierarchy_match: dominant versus secondary hue families and their relative visual area, without matching unrelated object colors;
+- palette_hierarchy_match: dominant versus secondary hue families and their prominence, adjusted for the different scene contents rather than raw pixel area;
 - saturation_hierarchy_match: which tonal/semantic regions are restrained or emphasized, not merely global saturation;
 - local_contrast_depth_match: microcontrast, haze/clarity and perceived depth while ignoring scene geometry;
 
 Then judge these four diagnostic fields separately:
-- content_preservation: target identity, geometry, texture and plausible materials;
-- temporal_consistency: consistency across the ordered frames, acknowledging that storyboard evidence is limited;
-- artifact_free: no clipping, crushing, halos, banding, unnatural casts or damaged skin/foliage;
-- overall_preference: holistic preference balancing all of the above.
+- content_preservation: target identity, geometry, fine edges, texture, local detail and plausible material appearance, without blur, reconstruction damage or semantic recoloring;
+- temporal_consistency: one coherent grade across the ordered frames, without flicker, pumping, exposure jumps or changing color casts, acknowledging that storyboard evidence is limited;
+- artifact_free: retained shadow and highlight detail with no clipping, crushing, halos, banding, posterization, color bleeding, over-smoothing, contaminated neutrals, or damaged skin, foliage and skies;
+- overall_preference: production-ready holistic preference, giving comparable consideration to reference-style transfer, content/detail preservation, temporal consistency and artifact control.
+
+Use these calibration anchors consistently: 5 means an excellent production-ready result with only negligible defects; 4 means clearly successful with minor defects; 3 means usable but with visible mismatch or degradation; 2 means major mismatch or damage; 1 means failure. A result with severe failure on any one of style transfer, content preservation, temporal consistency or artifact control should not receive an excellent overall_preference score.
 
 The evaluator computes reference_style_match as the unweighted mean of the nine style-only fields. It also computes overall_grade_quality as the unweighted mean of reference_style_match, content_preservation, temporal_consistency and artifact_free. Do not return those derived fields yourself. Use the full 1-5 range when evidence warrants it. Identity may preserve content but should score poorly on style fields it does not transfer. Return JSON only:
 {"candidate_scores":{"C01":{"deep_shadow_black_level_match":0,"shadow_chroma_match":0,"midtone_luminance_match":0,"midtone_palette_match":0,"highlight_rolloff_match":0,"neutral_axis_temperature_match":0,"palette_hierarchy_match":0,"saturation_hierarchy_match":0,"local_contrast_depth_match":0,"content_preservation":0,"temporal_consistency":0,"artifact_free":0,"overall_preference":0,"rationale":"..."}},"review_summary":"..."}
@@ -399,11 +403,12 @@ Include every supplied candidate code exactly once. Do not guess method identiti
     )
     result = _validate(client.generate_json(labeled, prompt), codes)
     report = {
-        "schema": "reference-video-blind-mllm-review/v3",
+        "schema": "reference-video-blind-mllm-review/v4",
         "sample": args.sample,
         "judge_model": args.model,
         "evidence": (
-            "8-frame ordered storyboards; nine style-only dimensions; "
+            "8-frame 1280-pixel ordered storyboards; nine style dimensions; "
+            "four production-quality diagnostics; calibrated 1-5 anchors; "
             "development evaluation only"
         ),
         **result,

@@ -125,6 +125,14 @@ ratings remain in the review JSON so the headline score is auditable and no
 group of subcriteria receives extra weight. This derived score was added from
 the stored component ratings and must be frozen before subsequent evaluations.
 
+The v4 judge prompt defines production-quality anchors for scores 1--5 and asks
+the evaluator to judge translated tonal/color relationships rather than literal
+cross-content histogram coincidence. Content scoring covers geometry, fine
+edges, texture and material plausibility; artifact scoring covers clipping,
+crushing, halos, banding, posterization, color bleeding, over-smoothing and
+contaminated neutrals. Storyboard cells are 320x180 so these defects remain
+visible to the judge.
+
 ## Reference-affinity editor in the API pool
 
 CAP-VSTNet combines a reversible residual representation, whitening/coloring
