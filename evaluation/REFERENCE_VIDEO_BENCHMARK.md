@@ -50,8 +50,7 @@ These metrics diagnose failure modes and never replace the style-match review.
 | Grading | LLM reference-style similarity | higher | An independent blinded vision model rates abstract grading similarity on a normalized 0--1 scale |
 | Grading | Lab channel Wasserstein | lower | Mean marginal distribution distance over normalized L, a and b |
 | Grading | Lab sliced Wasserstein (SWD) | lower | Joint Lab distribution distance averaged over 64 fixed projections |
-| Grading | Bounded Lab W1 similarity | higher | `1 - Lab W1 / (5/3)`; fixed Lab-space normalization for main-table presentation |
-| Grading | Bounded Lab SWD similarity | higher | `1 - Lab SWD / 3`; fixed Lab-space normalization for main-table presentation |
+| Grading | Lab histogram Bhattacharyya | higher | Natural 0--1 overlap coefficient averaged over the L, a and b histograms |
 | Content | Local-normalised structure correlation | higher | Geometry and visible texture survive the grade |
 | Content | Edge-SSIM | higher | Edge layout remains intact after the grade |
 | Content | DINOv2 cosine similarity | higher | Learned semantic/structural features remain close to the input |
@@ -90,13 +89,11 @@ Lower is closer. Because target and reference depict different content, both
 remain palette-distribution diagnostics and cannot establish style correctness
 by themselves.
 
-For compact main tables, the benchmark also reports bounded similarity forms.
-Normalized Lab has channel ranges 1, 2 and 2, so the mean marginal W1 is bounded
-by `5/3`; the joint Lab box has diameter `3`, which bounds every unit-direction
-projection used by SWD. The reported similarities are therefore `1 - W1/(5/3)`
-and `1 - SWD/3`, clipped to `[0, 1]`. These fixed, data-independent transforms
-preserve the distance rankings. Raw distances remain in the report and should
-be included in detailed results or an appendix.
+Lab histogram Bhattacharyya uses 64 fixed bins for each normalized channel and
+averages `sum(sqrt(p * q))` over L, a and b. It is naturally bounded between
+zero (no histogram overlap) and one (identical histograms), without a fitted or
+post-hoc normalization scale. Like the Wasserstein metrics, it remains a
+cross-content palette diagnostic rather than a complete style judgement.
 
 LLM reference-style similarity is the anonymized judge's 1--5
 `reference_style_match` rating normalized to 0--1. The judge sees the target,
