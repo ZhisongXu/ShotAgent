@@ -9,7 +9,8 @@ import os
 import time
 import urllib.error
 import urllib.request
-from typing import Protocol, Sequence
+from collections.abc import Sequence
+from typing import Protocol
 
 from PIL import Image
 
@@ -58,7 +59,7 @@ def extract_json_object(text: str) -> dict[str, object]:
             candidate,
         ) from error
     if not isinstance(payload, dict):
-        raise ValueError("Vision model JSON response must be an object.")
+        raise TypeError("Vision model JSON response must be an object.")
     return payload
 
 
@@ -223,7 +224,7 @@ class OpenAIResponsesVisionClient(OpenAICompatibleVisionClient):
     @staticmethod
     def _response_text(payload: object) -> str:
         if not isinstance(payload, dict):
-            raise ValueError("Responses API returned a non-object payload.")
+            raise TypeError("Responses API returned a non-object payload.")
         direct = payload.get("output_text")
         if isinstance(direct, str) and direct:
             return direct
@@ -300,6 +301,18 @@ class OpenAIResponsesVisionClient(OpenAICompatibleVisionClient):
                     f"responses HTTP {error.code}; retrying after {delay:.1f}s"
                 )
                 time.sleep(min(max(delay, 0.0), 30.0))
+            except (TimeoutError, urllib.error.URLError) as error:
+                if attempt == 2:
+                    raise RuntimeError(
+                        "Responses API network request failed after 3 attempts: "
+                        f"{error}"
+                    ) from error
+                delay = 2.0**attempt
+                _progress(
+                    "responses network request failed; retrying after "
+                    f"{delay:.1f}s ({error})"
+                )
+                time.sleep(delay)
         raise RuntimeError("Responses API retry loop exited unexpectedly.")
 
     def _repair_json(self, api_key: str, broken_json: str) -> dict[str, object]:

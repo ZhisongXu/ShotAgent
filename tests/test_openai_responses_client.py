@@ -3,6 +3,8 @@ import os
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import ClassVar
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -10,9 +12,9 @@ from video_retouch.clients import OpenAIResponsesVisionClient
 
 
 class _ResponsesHandler(BaseHTTPRequestHandler):
-    request_payload: dict[str, object] = {}
+    request_payload: ClassVar[dict[str, object]] = {}
     request_path = ""
-    requests: list[dict[str, object]] = []
+    requests: ClassVar[list[dict[str, object]]] = []
     malformed_first_response = False
 
     def do_POST(self):
@@ -134,6 +136,59 @@ class OpenAIResponsesVisionClientTest(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
+
+    def test_retries_network_timeout(self) -> None:
+        class _Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                del exc_type, exc, traceback
+
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "output": [
+                            {
+                                "type": "message",
+                                "content": [
+                                    {
+                                        "type": "output_text",
+                                        "text": '{"summary":"ok"}',
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+        old_key = os.environ.get("RESPONSES_TEST_KEY")
+        os.environ["RESPONSES_TEST_KEY"] = "test-only"
+        try:
+            client = OpenAIResponsesVisionClient(
+                base_url="https://example.test/v1",
+                model_id="gpt-5.6-sol",
+                api_key_env="RESPONSES_TEST_KEY",
+                reasoning_effort="none",
+                image_detail="low",
+            )
+            with (
+                patch(
+                    "video_retouch.clients.urllib.request.urlopen",
+                    side_effect=[TimeoutError("read timed out"), _Response()],
+                ) as mocked_open,
+                patch("video_retouch.clients.time.sleep") as mocked_sleep,
+            ):
+                result = client.generate_json([], "return JSON")
+
+            self.assertEqual(result, {"summary": "ok"})
+            self.assertEqual(mocked_open.call_count, 2)
+            mocked_sleep.assert_called_once_with(1.0)
+        finally:
+            if old_key is None:
+                os.environ.pop("RESPONSES_TEST_KEY", None)
+            else:
+                os.environ["RESPONSES_TEST_KEY"] = old_key
 
 
 if __name__ == "__main__":

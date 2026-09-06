@@ -10,7 +10,15 @@ import sys
 import time
 from pathlib import Path
 
-METHODS = ("sa-lut", "nlut", "cap-vstnet", "canoncgt", "shotagent-pool")
+METHODS = (
+    "sa-lut",
+    "nlut",
+    "cap-vstnet",
+    "canoncgt",
+    "modflows",
+    "video-color-grading",
+    "shotagent-pool",
+)
 
 
 def _run(command: list[str], cwd: Path) -> float:
@@ -100,6 +108,31 @@ def _baseline_command(
                 baseline_root
                 / "CanonCGT/configs/Stage3_SSL_training_Flickr2K_PPR10K_LSDIR.yaml"
             ),
+            *common,
+        ]
+    if method == "modflows":
+        return [
+            python,
+            "-m",
+            "evaluation.run_modflows_baseline",
+            "--repo-dir",
+            str(baseline_root / "ModFlows"),
+            "--checkpoint",
+            str(
+                baseline_root
+                / "ModFlows/checkpoints/2024.04.28 14-08-55_merged_8195_encoder_epoch_700000.pt"
+            ),
+            *common,
+        ]
+    if method == "video-color-grading":
+        return [
+            python,
+            "-m",
+            "evaluation.run_video_color_grading_baseline",
+            "--repo-dir",
+            str(baseline_root / "VideoColorGrading"),
+            "--config",
+            str(baseline_root / "VideoColorGrading/configs/prompts/video_demo.yaml"),
             *common,
         ]
     raise ValueError(f"Unsupported baseline: {method}")

@@ -41,7 +41,12 @@ The executable manifest is
    (CVPR 2023), official photorealistic-video checkpoint.
 4. **CanonCGT: Reference-Based Color Grading via Canonical Pivot
    Representation** (CVPR 2026), official SSL checkpoint.
-5. **ShotAgent API Editor Pool**, three API editor roles plus deterministic
+5. **ModFlows: Modulated Normalizing Flows for Image and Video Style
+   Transfer** (AAAI 2025), official encoder checkpoint and one fixed mapping
+   per sequence.
+6. **Video Color Grading via Look-Up Table Generation** (ICCV 2025), official
+   GS-Extractor and L-Diffuser checkpoints.
+7. **ShotAgent API Editor Pool**, three API editor roles plus deterministic
    safety and reference-affinity tools. It does not consume a baseline's output
    or weights.
 
@@ -57,7 +62,7 @@ normal 95% interval, and mean per-sequence rank. Lower average rank is better.
 There is no cross-axis composite score.
 
 The LLM style score is a development diagnostic. For each sequence, one
-independent judge sees the target, reference, and five anonymous candidate
+  independent judge sees the target, reference, and seven anonymous candidate
 storyboards. Reference-style similarity is the equal-weight mean of nine
 fields: deep-shadow black level, shadow chroma, midtone luminance, midtone
 palette, highlight roll-off, neutral-axis temperature, palette hierarchy,
@@ -75,11 +80,13 @@ report.
 
 | Paper method | LLM overall grade quality ↑ (0--1) | VGG style ↑ | Lab chroma BC ↑ |
 |---|---:|---:|---:|
-| SA-LUT | 0.5606 ± 0.1198 | 0.8966 ± 0.0322 | 0.7757 ± 0.1487 |
-| NLUT | 0.8027 ± 0.0983 | 0.9472 ± 0.0233 | 0.9349 ± 0.0345 |
-| CAP-VSTNet | 0.6381 ± 0.1449 | **0.9757 ± 0.0107** | **0.9680 ± 0.0141** |
-| **CanonCGT** | **0.8531 ± 0.0277** | 0.9063 ± 0.0383 | 0.7794 ± 0.1893 |
-| **ShotAgent API Editor Pool** | 0.8262 ± 0.0756 | 0.9114 ± 0.0384 | 0.9113 ± 0.0630 |
+| SA-LUT | 0.5975 ± 0.1286 | 0.8966 ± 0.0322 | 0.7744 ± 0.1477 |
+| NLUT | 0.7975 ± 0.0700 | 0.9472 ± 0.0233 | 0.9341 ± 0.0317 |
+| CAP-VSTNet | 0.6146 ± 0.1543 | **0.9757 ± 0.0107** | **0.9654 ± 0.0150** |
+| CanonCGT | 0.8409 ± 0.0302 | 0.9063 ± 0.0383 | 0.7782 ± 0.1865 |
+| ModFlows | 0.6709 ± 0.1551 | 0.9372 ± 0.0353 | 0.9462 ± 0.0215 |
+| Video Color Grading | 0.6762 ± 0.0963 | 0.8720 ± 0.0495 | 0.7112 ± 0.1202 |
+| **ShotAgent API Editor Pool** | **0.8505 ± 0.0378** | 0.9114 ± 0.0384 | 0.9095 ± 0.0609 |
 
 ### Content, temporal stability, artifacts, and quality
 
@@ -89,25 +96,28 @@ report.
 | NLUT | 0.9623 ± 0.0124 | 0.9545 ± 0.0178 | 0.6553 ± 0.1475 | 0.00906 ± 0.00497 | 0.00596 ± 0.00193 | 0.01147 ± 0.00622 | 4.207% ± 5.915% | 0.018% ± 0.041% | 62.08 ± 4.62 |
 | CAP-VSTNet | 0.9197 ± 0.0535 | 0.8764 ± 0.0660 | 0.6240 ± 0.2042 | **0.00750 ± 0.00437** | 0.00688 ± 0.00246 | 0.01033 ± 0.00443 | 3.270% ± 4.510% | 0.019% ± 0.037% | 57.95 ± 6.64 |
 | CanonCGT | 0.9918 ± 0.0056 | **0.9944 ± 0.0015** | 0.8122 ± 0.1048 | 0.01028 ± 0.00380 | 0.00627 ± 0.00282 | 0.02974 ± 0.02122 | 3.352% ± 6.959% | **0.000% ± 0.000%** | **65.10 ± 4.46** |
+| ModFlows | 0.9508 ± 0.0272 | 0.9072 ± 0.0873 | 0.5812 ± 0.2222 | 0.01288 ± 0.01231 | 0.00889 ± 0.00893 | 0.01183 ± 0.00841 | 6.652% ± 8.098% | 0.216% ± 0.478% | 59.17 ± 4.36 |
+| Video Color Grading | 0.9616 ± 0.0169 | 0.9243 ± 0.0397 | 0.7330 ± 0.0761 | 0.01190 ± 0.00437 | 0.00694 ± 0.00195 | 0.01641 ± 0.00852 | 2.210% ± 3.737% | **0.000% ± 0.000%** | **65.61 ± 3.24** |
 | **ShotAgent API Editor Pool** | **0.9920 ± 0.0031** | 0.9686 ± 0.0255 | **0.8823 ± 0.0580** | 0.01148 ± 0.00434 | **0.00389 ± 0.00114** | **0.00672 ± 0.00314** | **0.197% ± 0.426%** | **0.000% ± 0.000%** | 64.74 ± 2.64 |
 
 ### Mean per-sequence rank by axis
 
 | Method | Overall ↓ | Style (3 metrics) ↓ | Content (3) ↓ | Temporal (3) ↓ | Quality/artifact (3) ↓ |
 |---|---:|---:|---:|---:|---:|
-| SA-LUT | 3.949 | 4.611 | 3.407 | 4.259 | 3.519 |
-| NLUT | 2.954 | 2.222 | 3.815 | 2.630 | 3.148 |
-| CAP-VSTNet | 3.065 | **1.370** | 4.519 | 2.630 | 3.741 |
-| CanonCGT | 2.773 | 3.648 | 1.667 | 3.407 | 2.370 |
-| **ShotAgent API Editor Pool** | **2.259** | 3.148 | **1.593** | **2.074** | **2.222** |
+| SA-LUT | 5.037 | 5.889 | 3.926 | 5.593 | 4.741 |
+| NLUT | 3.648 | 2.685 | 4.593 | 3.074 | 4.241 |
+| CAP-VSTNet | 3.903 | **1.667** | 5.741 | 3.296 | 4.907 |
+| CanonCGT | 3.537 | 4.741 | 1.667 | 4.481 | 3.259 |
+| ModFlows | 4.375 | 3.130 | 5.630 | 3.741 | 5.000 |
+| Video Color Grading | 4.810 | 6.148 | 4.852 | 5.296 | 2.944 |
+| **ShotAgent API Editor Pool** | **2.690** | 3.741 | **1.593** | **2.519** | **2.907** |
 
-ShotAgent leads the content, temporal, and quality/artifact axis ranks and is
-second on LLM overall grade quality by macro mean. CAP-VSTNet leads pure
-reference-style similarity. ShotAgent is third by the LLM reference-style, VGG,
-and Lab chroma histogram BC means. Equal weighting of the four axis ranks gives
-ShotAgent the best overall rank. The result
-identifies reference tonal-hierarchy matching as the remaining weakness rather
-than content preservation or temporal stability.
+ShotAgent leads LLM overall grade quality and the content and temporal axis
+ranks. CAP-VSTNet leads pure reference-style similarity, while its content and
+quality losses keep it behind on the equal-axis overall rank. Equal weighting
+of the four axis ranks gives ShotAgent the best overall result. The remaining
+weakness is reference feature/distribution matching rather than content
+preservation or temporal stability.
 
 ## Reproduction
 
@@ -119,7 +129,7 @@ python -m evaluation.run_reference_video_suite \
   --output-root outputs/reference_video_eval/multisequence_v1
 ```
 
-Run the no-GT evaluator with the five rendered output directories as
+Run the no-GT evaluator with the seven rendered output directories as
 `--external METHOD=DIR`. The generated benchmark directory contains
 `results.csv`, `aggregate.csv`, `report.json`, nine comparison videos, and
 anonymous individual/pairwise review sheets.
