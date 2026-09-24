@@ -163,6 +163,45 @@ probes and the paired SDSD video benchmark.
 The frozen five-track benchmark card is
 [`evaluation/BENCHMARK.md`](evaluation/BENCHMARK.md).
 
+## Synthetic ShotMatch dataset
+
+`tools/generate_shotmatch_dataset.py` converts a directory of already mastered
+multi-shot videos into paired data for Hero-referenced white balance and shot
+matching. It recursively scans `.avi`, `.m4v`, `.mkv`, `.mov`, `.mp4`, and
+`.webm` files, detects shots, keeps one complete Hero shot unchanged, and
+independently perturbs every other shot in camera-linear space. Videos with
+fewer than two detected shots are skipped and listed in `manifest.json`.
+
+```bash
+python tools/generate_shotmatch_dataset.py \
+  --input-dir /datasets/mastered_multishot_clips \
+  --output-dir outputs/shotmatch_v1 \
+  --variants 3 \
+  --track realisp \
+  --seed 2026
+```
+
+The default three variants cycle through `mild`, `medium`, and `hard` severity.
+The output contains one lossless FFV1 ground-truth video per source, synthesized
+inputs, per-shot JSON labels, and a dataset-level manifest:
+
+```text
+shotmatch_v1/
+  manifest.json
+  ground_truth/<source>.mkv
+  inputs/<source>__v00_realisp_mild.mkv
+  labels/<source>__v00_realisp_mild.json
+```
+
+Available tracks are `global` (exposure/WB/CCM only), `realisp` (the default,
+adding correlated CCT/tint, black/white levels, hue/saturation response, tone
+curve, and highlight roll-off), and `temporal` (RealISP plus smooth AE/AWB/CCM
+settling after each cut). The same sampled state is used throughout a shot in
+the first two tracks, so synthesis does not introduce random frame flicker.
+Generated labels contain all sampled parameters, clipping statistics, and the
+forward/inverse linear-core matrices. Curate the input directory so clips from
+the same original production do not leak across downstream train/test splits.
+
 ## Single-image retouching
 
 ```bash
