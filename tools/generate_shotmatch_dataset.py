@@ -495,7 +495,9 @@ def generate(args: argparse.Namespace) -> dict[str, object]:
     videos = sorted(
         path.resolve()
         for path in input_root.rglob("*")
-        if path.is_file() and path.suffix.lower() in VIDEO_SUFFIXES
+        if path.is_file()
+        and path.suffix.lower() in VIDEO_SUFFIXES
+        and path.match(args.include)
     )
     if not videos:
         raise RuntimeError(f"No videos found below {input_root}")
@@ -591,6 +593,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--include",
+        default="*",
+        help="Only process paths matching this glob, for example '*_6fps.mp4'.",
+    )
     parser.add_argument("--variants", type=int, default=3)
     parser.add_argument("--track", choices=TRACKS, default="realisp")
     parser.add_argument("--seed", type=int, default=2026)

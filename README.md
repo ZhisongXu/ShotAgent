@@ -175,11 +175,15 @@ fewer than two detected shots are skipped and listed in `manifest.json`.
 ```bash
 python tools/generate_shotmatch_dataset.py \
   --input-dir /datasets/mastered_multishot_clips \
+  --include "*_6fps.mp4" \
   --output-dir outputs/shotmatch_v1 \
   --variants 3 \
   --track realisp \
   --seed 2026
 ```
+
+`--include` is an optional glob for selecting source videos from the recursive
+scan; omit it to process every supported video under `--input-dir`.
 
 The default three variants cycle through `mild`, `medium`, and `hard` severity.
 The output contains one lossless FFV1 ground-truth video per source, synthesized
